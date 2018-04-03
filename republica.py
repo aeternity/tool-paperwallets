@@ -95,17 +95,13 @@ def pdf(template_front_path,
     c = canvas.Canvas(watermark_file)
     # Draw the image at x, y. I positioned the x,y to be where i like here
     # x17  w126
-    x = 31
-    c.drawImage(qr_front_path, x, 163, 96, 96)
+    x = 304
+    size = 102
+    c.drawImage(qr_front_path, x, 170, size, size, anchor='sw')
     # Add some custom text for good measure
     # c.setFont("Suisse Int’l Mono", 10)
     c.setFont("Roboto", 8)
-    c.drawString(x, 133, name)
-    c.drawString(x, 103, address[0:21])
-    c.drawString(x, 90, address[21:42])
-    c.drawString(x, 78, address[42:63])
-    c.drawString(x, 64, address[63:84])
-    c.drawString(x, 52, address[84:])
+    c.drawString(x, 156, url)
     c.save()
     # Get the watermark file you just created
     watermark = PdfFileReader(open(watermark_file, "rb"))
@@ -128,12 +124,18 @@ def pdf(template_front_path,
     c = canvas.Canvas(watermark_file)
     # Draw the image at x, y. I positioned the x,y to be where i like here
     # x17  w126
-    x = 314
-    c.drawImage(qr_back_path, x, 182, 93, 93)
+    x = 31
+    size = 102
+    c.drawImage(qr_back_path, x, 155, size, size, anchor='sw')
     # Add some custom text for good measure
     # c.setFont("Suisse Int’l Mono", 10)
     c.setFont("Roboto", 8)
-    c.drawString(x, 170, url)
+    c.drawString(x, 52, name)
+    c.drawString(x, 141, address[0:21]) # 103
+    c.drawString(x, 128, address[21:42]) # 90
+    c.drawString(x, 116, address[42:63]) # 78
+    c.drawString(x, 102, address[63:84]) # 64
+    c.drawString(x, 90, address[84:]) # 52
     c.save()
     # Get the watermark file you just created
     watermark = PdfFileReader(open(watermark_file, "rb"))
@@ -340,7 +342,7 @@ def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=Fa
     try:
         amount_to_fill = amount
         if ensure_balance:
-            balance = epoch_cli.get_balance(recipient_address)
+            balance = 0#epoch_cli.get_balance(recipient_address)
             if balance >= amount:
                 print(
                     f'sufficient funds for {recipient_address} requested: {balance}/{amount}')
@@ -353,6 +355,7 @@ def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=Fa
     except Exception as e:
         print(
             f'error running transaction on wallet {recipient_address} , {e}')
+        raise e
 
     return tx_hash
 
