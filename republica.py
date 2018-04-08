@@ -306,6 +306,7 @@ def cmd_gen(args=None):
             'long_url': long_url,
             'short_url': short_url,
             'wallet': url_params,
+            'created_at': now(),
             'txs': []
         }
 
@@ -332,7 +333,7 @@ def cmd_gen(args=None):
             pdf_back_path,
             data['wallet']['p'],
             data['wallet']['n'],
-            data['short_url'][8:]) # do not include the 'https://'
+            data['short_url'][8:])  # do not include the 'https://'
         # done
         print(data['short_url'])
 
@@ -341,8 +342,8 @@ def cmd_gen(args=None):
             amount = config['aeternity']['wallet_credit']
             tx = fill(epoch, genesis, keypair.get_address(),
                       amount, ensure_balance=args.ensure_balance)
-            if tx is not None:
-                data['txs'].append('tx_hash')
+            if tx['tx'] is not None:
+                data['txs'].append(tx)
                 write_json(wallet_path, data)
 
 
