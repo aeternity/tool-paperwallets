@@ -20,6 +20,7 @@ from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 from PyPDF2 import PdfFileWriter, PdfFileReader
 
+
 # this is just a hack to get this example to import a parent folder:
 print()
 sys.path.append(
@@ -29,11 +30,10 @@ sys.path.append(
 from aeternity import Config
 from aeternity.signing import KeyPair
 from aeternity.epoch import EpochClient
-
+from aeternity.aens import AEName
 
 DEFAULT_TARGET_FOLDER = 'wallets'
 
-FILE_QR_BEERAPP_NAME = ''
 
 FILE_QR_BEERAPP_NAME = 'qr_beerapp.png'
 FILE_QR_PUBKEY_NAME = 'qr_pubkey.png'
@@ -57,6 +57,7 @@ class KuttCli(object):
         endp = '%s/api/url/submit' % self.kuttit_baseurl
         r = requests.post(endp, data=data, headers=headers)
         # see https://github.com/thedevs-network/kutt#types
+
         url_object = r.json()
         return url_object['id'], url_object['shortUrl']
 
@@ -362,12 +363,21 @@ def cmd_fill(args=None):
                 with open(wallet_path, 'r') as fp:
                     data = json.load(fp)
                     recipient_address = data['wallet']['p']
+                    # check if only to verify
+                    if args.verify_only:
+                        verify(epoch, recipient_address, data['txs'])
+                        continue
+                    # fill
                     print(
                         f'fill wallet at path {wallet_path}, {recipient_address}')
-                    tx_hash = fill(epoch, genesis, recipient_address,
-                                   amount, ensure_balance=args.ensure_balance)
-                    if tx_hash is not None:
-                        data['txs'].append(tx_hash)
+                    tx = fill(epoch, genesis, recipient_address,
+                              amount, ensure_balance=args.ensure_balance)
+                    # claim the name
+                    if args.claim_name:
+                        claim(epoch, genesis, data['wallet'])
+                    if tx['tx'] is not None:
+                        data['txs'].append(tx)
+                        write_json(wallet_path, data)
 
 
 def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=False):
@@ -376,22 +386,54 @@ def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=Fa
     try:
         amount_to_fill = amount
         if ensure_balance:
-            balance = 0#epoch_cli.get_balance(recipient_address)
+            balance = 0
+            try:
+                balance = epoch_cli.get_balance(recipient_address)
+            except Exception as x:
+                print('account empty', x)
+
             if balance >= amount:
                 print(
                     f'sufficient funds for {recipient_address} requested: {balance}/{amount}')
             else:
                 amount_to_fill = amount - balance
-
-        resp, tx_hash = epoch_cli.spend(keypair=sender_keypair,
-                                        recipient_pubkey=recipient_address,
-                                        amount=amount_to_fill)
+                print(
+                    f'will fill {amount_to_fill} tokens to {recipient_address}')
+                resp, tx_hash = epoch_cli.spend(keypair=sender_keypair,
+                                                recipient_pubkey=recipient_address,
+                                                amount=amount_to_fill)
     except Exception as e:
         print(
             f'error running transaction on wallet {recipient_address} , {e}')
         raise e
 
-    return tx_hash
+    return {'tx': tx_hash, 'ts': now()}
+
+
+def claim(epoch_cli, genesis, wallet):
+    """ claim the wallet name in the chain """
+    k = KeyPair.from_public_private_key_strings(wallet['p'], wallet['k'])
+    name = AEName(wallet['d'], client=epoch_cli)
+    if name.is_available():
+        print('name available')
+        name.preclaim(k)
+        name.claim_blocking(k)
+        name.update(genesis, target=wallet['p'])
+    else:
+        print(f'name {name} already taken')
+
+
+def verify(epoch_cli, account, txs):
+    try:
+        print(f'> account {account}')
+        for t in txs:
+            txh = t['tx']
+            tx = epoch_cli.get_transaction_by_transaction_hash(txh)
+            print(f'--> tx {tx}')
+        balance = epoch_cli.get_balance(account)
+        print(f'balance: {balance} for account: {account}')
+    except Exception as e:
+        print(f'error {e}')
 
 
 def cmd_purge(args=None):
@@ -453,6 +495,18 @@ if __name__ == '__main__':
                 {
                     'names': ['-b', '--ensure-balance'],
                     'help':'ensure that the balance of the account is > than the wallet fill from config',
+                    'action': 'store_true',
+                    'default': True
+                },
+                {
+                    'names': ['-v', '--verify-only'],
+                    'help':'only verify the balance and the transactions, do not fill',
+                    'action': 'store_true',
+                    'default': False
+                },
+                {
+                    'names': ['-n', '--claim-name'],
+                    'help':'claim the name associated to the wallet',
                     'action': 'store_true',
                     'default': False
                 }
