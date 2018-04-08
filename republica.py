@@ -12,6 +12,8 @@ import random
 import shutil
 import nanoid
 
+import datetime
+
 # pdf
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
@@ -101,6 +103,12 @@ class Namer(object):
         random.seed(a=seed, version=2)
         a3 = random.choice(words.animals)
         return f'{a1} {a2} {a3}', f'{a1}{sep}{a2}{sep}{a3}.{tld}'
+
+
+def now():
+    """return the current date as a string in iso format"""
+    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
+
 
 def pdf(template_front_path,
         qr_front_path,
