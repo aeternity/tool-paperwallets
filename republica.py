@@ -8,10 +8,8 @@ import requests
 import sys
 
 import qrcode
-import qrcode.image.svg
-
+import random
 import shutil
-
 import nanoid
 
 # pdf
@@ -76,6 +74,33 @@ class KuttCli(object):
             if urls['countAll'] <= 0:
                 has_urls = False
 
+
+class Namer(object):
+    """generate a name for a key"""
+
+    def __init__(self):
+        self.animals = []
+        self.adjectives = []
+        with open('gfycat/adjectives.json') as fp:
+            self.adjectives = json.load(fp)
+        with open('gfycat/animals.json') as fp:
+            self.animals = json.load(fp)
+
+    def gen_name(self, seed, sep='_', tld='aet'):
+        """generate the deterministic name for a public key: name and aet domain
+        :param seed: the wallet address
+        :param sep: word separator for domain
+        :param tld: the tld for the domain
+        :return:  the wallet name and domain name
+
+        ============
+        example: ('good bad boar', 'good_bad_boar.aet')
+        """
+        random.seed(a=seed, version=2)
+        a1, a2 = random.sample(words.adjectives, 2)
+        random.seed(a=seed, version=2)
+        a3 = random.choice(words.animals)
+        return f'{a1} {a2} {a3}', f'{a1}{sep}{a2}{sep}{a3}.{tld}'
 
 def pdf(template_front_path,
         qr_front_path,
@@ -225,8 +250,9 @@ def cmd_gen(args=None):
 
     # shortener client
     kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
-    # mnemonic key generator BIP-0039: Mnemonic code for generating deterministic keys
-    # mnem = mnemonic.Mnemonic('english')
+
+    # name generator
+    namer = Namer()
 
     # get the epoch client and the genesis keypair
     epoch, genesis = get_aeternity(config)
@@ -239,14 +265,14 @@ def cmd_gen(args=None):
     for x in range(n):
         # generate a new keypair
         keypair = KeyPair.generate()
-
-        # TODO save the current time
-        # d = datetime.datetime.now(tzlocal())
+        # generate name+domain anme
+        n, d = namer.gen_name(keypair.get_address())
         # generate the url params
         url_params = {
             'p': keypair.get_address(),
             'k': keypair.get_private_key(),
-            'n': keypair.get_name(),
+            'n': n,
+            'd': d,
         }
 
         long_url = requests.Request(
