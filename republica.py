@@ -207,9 +207,10 @@ def get_aeternity(config):
     """get the epoch client and the genesis keypair from config"""
     # configure epoch client in case we need it
     epoch = EpochClient(configs=Config(
-        external_host=config['aeternity']['node_url'],
-        internal_host=config['aeternity']['node_url'] + '/internal',
-        secure_connection=True
+        external_host=config['aeternity'].get('node_host'),
+        internal_host=config['aeternity'].get(
+            'node_host_internal'),  # + '/internal'
+        secure_connection=config['aeternity'].get('node_use_https', False)
     ))
     # load the genesis keypair
     gp = config['aeternity']['genesis_public_key']
@@ -255,7 +256,7 @@ def cmd_gen(args=None):
     # pdf fonts
     pdfmetrics.registerFont(
         TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
-        )
+    )
 
     # shortener client
     kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
