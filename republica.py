@@ -164,11 +164,11 @@ def pdf(template_front_path,
     # c.setFont("Suisse Int’l Mono", 10)
     c.setFont("Roboto", 8)
     c.drawString(x, 52, name)
-    c.drawString(x, 141, address[0:21]) # 103
-    c.drawString(x, 128, address[21:42]) # 90
-    c.drawString(x, 116, address[42:63]) # 78
-    c.drawString(x, 102, address[63:84]) # 64
-    c.drawString(x, 90, address[84:]) # 52
+    c.drawString(x, 141, address[0:21])
+    c.drawString(x, 128, address[21:42])
+    c.drawString(x, 116, address[42:63])
+    c.drawString(x, 102, address[63:84])
+    c.drawString(x, 90, address[84:])
     c.save()
     # Get the watermark file you just created
     watermark = PdfFileReader(open(watermark_file, "rb"))
