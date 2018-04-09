@@ -100,9 +100,9 @@ class Namer(object):
         example: ('good bad boar', 'good_bad_boar.aet')
         """
         random.seed(a=seed, version=2)
-        a1, a2 = random.sample(words.adjectives, 2)
+        a1, a2 = random.sample(self.adjectives, 2)
         random.seed(a=seed, version=2)
-        a3 = random.choice(words.animals)
+        a3 = random.choice(self.animals)
         return f'{a1} {a2} {a3}', f'{a1}{sep}{a2}{sep}{a3}.{tld}'
 
 
