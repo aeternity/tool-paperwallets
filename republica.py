@@ -96,6 +96,9 @@ class Namer(object):
             self.adjectives = json.load(fp)
         with open('gfycat/animals.json') as fp:
             self.animals = json.load(fp)
+        with open('gfycat/cities.json') as fp:
+            self.cities = json.load(fp)
+            self.cities_len = len(self.cities)
 
     def gen_name(self, seed, sep='-'):
         """generate the deterministic name for a public key
@@ -109,6 +112,12 @@ class Namer(object):
         random.seed(a=seed, version=2)
         a3 = random.choice(self.animals)
         return f'{a1}{sep}{a2}{sep}{a3}'
+
+    def get_city(self, index):
+        """return the city name at index (lowercase)"""
+        if index < 0 or index >= self.cities_len:
+            raise Exception(f"index renage is 0-{self.cities_len-1}")
+        return self.cities[index].lower()
 
 
 class Printer(object):
@@ -250,6 +259,14 @@ class Windex(object):
 
         self.db.row_factory = dict_factory
 
+    def db_update(self, q, p):
+        c = self.db.cursor()
+        # Insert a row of data
+        c.execute(q, p)
+        # Save (commit) the changes
+        self.db.commit()
+        c.close()
+
     # statuses are
     # - created (just the private/public keys)
     # - filled (the account as been filled)
@@ -275,6 +292,11 @@ class Windex(object):
         self.db.commit()
         c.close()
 
+    def update_wallet_name(self, public_key, name):
+        self.db_update(
+            "update wallets set wallet_name = ?, updated_at = ? where public_key = ?",
+            (name, datetime.datetime.now(), public_key)
+            )
     def insert_tx(self, sender_public_key, recipient_public_key, amount, tx_hash, fee=1):
         c = self.db.cursor()
         # Insert a row of data
@@ -407,6 +429,15 @@ def cmd_gen(args=None):
     # if just dump run only the dump
     if args.dump_json:
         windex.wallets2json()
+        return
+
+    # if is update names then do the update
+    if args.update_names:
+        print('update names')
+        for i, w in enumerate(windex.get_wallets()):
+            city_name = namer.get_city(i)
+            windex.update_wallet_name(w['public_key'], city_name)
+            print(f'name {city_name} for {w["id"]} - {w["public_key"]}')
         return
 
     # number of wallet to generate
@@ -639,7 +670,7 @@ if __name__ == '__main__':
                     'default': False
                 },
                 {
-                    'names': ['--names'],
+                    'names': ['-m', '--update-names'],
                     'help': 'only update the wallets with names from a json file',
                     'action': 'store_true',
                     'default': False
@@ -680,10 +711,14 @@ if __name__ == '__main__':
                     'default': False
                 },
                 {
-                    'names': ['-n', '--claim-name'],
-                    'help':'claim the name associated to the wallet',
-                    'action': 'store_true',
-                    'default': False
+                    'names': ['-o', '--offset'],
+                    'help':'the offset in the list of wallets to start filling from',
+                    'default': 0
+                },
+                {
+                    'names': ['-l', '--limit'],
+                    'help':'limit the number of wallet to fill, 0 means no limit',
+                    'default': 0
                 }
             ]
         },
