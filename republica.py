@@ -11,6 +11,8 @@ import qrcode
 import random
 import shutil
 import nanoid
+import sqlite3
+
 
 import datetime
 
@@ -33,6 +35,10 @@ from aeternity.epoch import EpochClient
 from aeternity.aens import AEName
 
 DEFAULT_TARGET_FOLDER = 'wallets'
+
+STATUS_CREATED = 10
+STATUS_FILLED = 20
+STATUS_CLAIMED = 30
 
 
 FILE_QR_BEERAPP_NAME = 'qr_beerapp.png'
@@ -57,8 +63,10 @@ class KuttCli(object):
         endp = '%s/api/url/submit' % self.kuttit_baseurl
         r = requests.post(endp, data=data, headers=headers)
         # see https://github.com/thedevs-network/kutt#types
-
         url_object = r.json()
+        if r.status_code != 200:
+            print(url_object)
+            raise Exception("error from the shortener service")
         return url_object['id'], url_object['shortUrl']
 
     def purge(self):
@@ -89,111 +97,257 @@ class Namer(object):
         with open('gfycat/animals.json') as fp:
             self.animals = json.load(fp)
 
-    def gen_name(self, seed, sep='_', tld='aet'):
-        """generate the deterministic name for a public key: name and aet domain
+    def gen_name(self, seed, sep='-'):
+        """generate the deterministic name for a public key
         :param seed: the wallet address
         :param sep: word separator for domain
         :param tld: the tld for the domain
-        :return:  the wallet name and domain name
-
-        ============
-        example: ('good bad boar', 'good_bad_boar.aet')
+        :return:  the wallet name 
         """
         random.seed(a=seed, version=2)
         a1, a2 = random.sample(self.adjectives, 2)
         random.seed(a=seed, version=2)
         a3 = random.choice(self.animals)
-        return f'{a1} {a2} {a3}', f'{a1}{sep}{a2}{sep}{a3}.{tld}'
+        return f'{a1}{sep}{a2}{sep}{a3}'
+
+
+class Printer(object):
+    """class repsonisible to do the pdf printing"""
+
+    def __init__(self, pdf_front_template_path, pdf_back_template_path):
+        # template paths
+        #
+        self.pdf_front_template_path = pdf_front_template_path
+        #
+        self.pdf_back_template_path = pdf_back_template_path
+
+        # QR code generation
+        self.qr_cli = qrcode.QRCode(
+            version=1,
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            box_size=10,
+            border=0,
+        )
+        # pdf fonts
+        pdfmetrics.registerFont(
+            TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
+        )
+
+    def qr_img(self, output_path, data):
+        """generate a qr code from a path"""
+        self.qr_cli.clear()
+        self.qr_cli.add_data(data)
+        self.qr_cli.make(fit=True)
+        img = self.qr_cli.make_image(fill_color="black", back_color="white")
+        img.save(output_path)
+
+    def pdf(self,
+            work_dir_path,
+            address='',
+            name='',
+            url=''):
+        """generates the pdf with the wallet qr, name and address"""
+
+        # make the target directory
+        if not os.path.exists(work_dir_path):
+            os.makedirs(work_dir_path, exist_ok=True)
+
+        print(f'generate pdf at {work_dir_path}')
+
+        qr_front_path = os.path.join(work_dir_path, FILE_QR_BEERAPP_NAME)
+        qr_back_path = os.path.join(work_dir_path, FILE_QR_PUBKEY_NAME)
+        pdf_front_path = os.path.join(work_dir_path, FILE_PDF_FRONT_NAME)
+        pdf_back_path = os.path.join(work_dir_path, FILE_PDF_BACK_NAME)
+
+        # generate qr code for beer app
+        self.qr_img(qr_front_path, url)
+        # generate qr code for public key
+        self.qr_img(qr_back_path, address)
+
+        # first front
+        watermark_file = os.path.join(work_dir_path, 'watermark_front.pdf')
+        # Create the watermark from an image
+        c = canvas.Canvas(watermark_file)
+        # Draw the image at x, y. I positioned the x,y to be where i like here
+        # x17  w126
+        x = 304
+        size = 102
+        c.drawImage(qr_front_path, x, 170, size, size, anchor='sw')
+        # Add some custom text for good measure
+        # c.setFont("Suisse Int’l Mono", 10)
+        c.setFont("Roboto", 8)
+        c.drawString(x, 156, url.replace(
+            'https://', '').replace('http://', ''))
+        c.save()
+        # Get the watermark file you just created
+        watermark = PdfFileReader(open(watermark_file, "rb"))
+        # Get our files ready
+        output_file = PdfFileWriter()
+        input_file = PdfFileReader(open(self.pdf_front_template_path, "rb"))
+
+        input_page = input_file.getPage(0)
+        input_page.mergePage(watermark.getPage(0))
+        # add page from input file to output document
+        output_file.addPage(input_page)
+
+        # finally, write "output" to document-output.pdf
+        with open(pdf_front_path, "wb") as outputStream:
+            output_file.write(outputStream)
+        # cleanup
+        os.remove(watermark_file)
+        os.remove(qr_front_path)
+
+        # now do the back
+        watermark_file = os.path.join(work_dir_path, 'watermark_back.pdf')
+        # Create the watermark from an image
+        c = canvas.Canvas(watermark_file)
+        # Draw the image at x, y. I positioned the x,y to be where i like here
+        # x17  w126
+        x = 31
+        size = 102
+        c.drawImage(qr_back_path, x, 155, size, size, anchor='sw')
+        # Add some custom text for good measure
+        # c.setFont("Suisse Int’l Mono", 10)
+        c.setFont("Roboto", 8)
+        c.drawString(x, 52, name)
+        c.drawString(x, 141, address[0:21])
+        c.drawString(x, 128, address[21:42])
+        c.drawString(x, 116, address[42:63])
+        c.drawString(x, 102, address[63:84])
+        c.drawString(x, 90, address[84:])
+        c.save()
+        # Get the watermark file you just created
+        watermark = PdfFileReader(open(watermark_file, "rb"))
+        # Get our files ready
+        output_file = PdfFileWriter()
+        input_file = PdfFileReader(open(self.pdf_back_template_path, "rb"))
+
+        input_page = input_file.getPage(0)
+        input_page.mergePage(watermark.getPage(0))
+        # add page from input file to output document
+        output_file.addPage(input_page)
+
+        # finally, write "output" to document-output.pdf
+        with open(pdf_back_path, "wb") as outputStream:
+            output_file.write(outputStream)
+
+        # remove what is not useful
+        # cleanup
+        os.remove(watermark_file)
+        os.remove(qr_back_path)
+
+
+class Windex(object):
+
+    def __init__(self, db_path='republica_wallets.sqlite'):
+        self.db = sqlite3.connect(db_path)
+
+        def dict_factory(cursor, row):
+            d = {}
+            for idx, col in enumerate(cursor.description):
+                d[col[0]] = row[idx]
+            return d
+
+        self.db.row_factory = dict_factory
+
+    # statuses are
+    # - created (just the private/public keys)
+    # - filled (the account as been filled)
+    # - named (the account name has been registered)
+    # -
+    def insert_wallet(self, private, public, name=None, path=None, short_url=None, long_url=None, id=None):
+        """"
+        Insert a wallet inside a sqlite database
+
+        :param private: the private key hex encoded
+        :param public: the public address base58 encoded
+        :param name: the wallet name without extension
+        :param path: the relative path of the wallet fodder
+        :param short_url: the short url of the wallet 
+        :param long_url: the long url of the wallet
+        :param id: the short_id of the wallet
+        """
+        c = self.db.cursor()
+        # Insert a row of data
+        c.execute("insert into wallets(private_key,public_key,wallet_name,path,short_url,long_url,id) values (?,?,?,?,?,?,?)",
+                  (private, public, name, path, short_url, long_url, id))
+        # Save (commit) the changes
+        self.db.commit()
+        c.close()
+
+    def insert_tx(self, sender_public_key, recipient_public_key, amount, tx_hash, fee=1):
+        c = self.db.cursor()
+        # Insert a row of data
+        c.execute("insert into txs(public_key_from, public_key_to, amount, fee, ts, tx_hash) values(?,?,?,?,?,?)",
+                  (sender_public_key, recipient_public_key, amount, fee, datetime.datetime.now(), tx_hash))
+        # Save (commit) the changes
+        self.db.commit()
+        c.close()
+
+    def get_wallets(self, status=None, operator='=', offset=0, limit=0):
+        """retrieve the list of wallets
+        :param status: filter wallets with status
+        :param operator: can be '=': only take the wallets with the exacts status, '>=': with status equal or greather, '<': with status less then
+        :returns: 
+        """
+        c = self.db.cursor()
+        q, p = 'SELECT * FROM wallets', ()
+        if status is not None:
+            if operator not in ['=', '<', '>', '>=', '<=']:
+                operator = '='
+            q += f' WHERE wallet_status {operator} ?'
+            p = (status,)
+        #  order by id
+        q = f'{q} order by id'
+        # set the limit
+        if limit > 0:
+            q = f'{q} limit {limit}'
+        # set the offset
+        if offset > 0:
+            q = f'{q} offset {offset}'
+        
+        c.execute(q, p)
+        rows = c.fetchall()
+        c.close()
+        return rows
+
+    def get_txs(self, public_key):
+        """get the transactions that involve a public key"""
+        c = self.db.cursor()
+        q, p = 'SELECT * FROM txs WHERE public_key_from = ? OR public_key_to = ?', (
+            public_key, public_key)
+        c.execute(q, p)
+        rows = c.fetchall()
+        c.close()
+        return rows
+
+    def wallets2json(self, status=None):
+        """crete a json dump of a wallet in the wallet folder"""
+        for w in self.get_wallets(status=status):
+            if not os.path.exists(w['path']):
+                os.makedirs(w['path'], exist_ok=True)
+            # folder name
+            w['txs'] = self.get_txs(w['public_key'])
+            wallet_path = os.path.join(w['path'], FILE_WALLET_NAME)
+            # save data
+            write_json(wallet_path, w)
+
+    def set_status(self, public_key, new_status):
+        """update the status of a wallet"""
+        c = self.db.cursor()
+
+        c.execute('UPDATE wallets SET wallet_status = ?, updated_at = ? WHERE public_key = ?',
+                  (new_status, datetime.datetime.now(), public_key))
+        self.db.commit()
+        c.close()
+
+    def close(self):
+        self.db.close()
 
 
 def now():
-    """return the current date as a string in iso format"""
+    """return the current date as a string in iso format or in a specified format"""
     return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
-
-
-def pdf(template_front_path,
-        qr_front_path,
-        template_back_path,
-        qr_back_path,
-        work_dir_path,
-        pdf_front_path,
-        pdf_back_path,
-        address='',
-        name='',
-        url=''):
-    """generates the pdf with the wallet qr, name and address"""
-
-    # first front
-    watermark_file = os.path.join(work_dir_path, 'watermark_front.pdf')
-    # Create the watermark from an image
-    c = canvas.Canvas(watermark_file)
-    # Draw the image at x, y. I positioned the x,y to be where i like here
-    # x17  w126
-    x = 304
-    size = 102
-    c.drawImage(qr_front_path, x, 170, size, size, anchor='sw')
-    # Add some custom text for good measure
-    # c.setFont("Suisse Int’l Mono", 10)
-    c.setFont("Roboto", 8)
-    c.drawString(x, 156, url)
-    c.save()
-    # Get the watermark file you just created
-    watermark = PdfFileReader(open(watermark_file, "rb"))
-    # Get our files ready
-    output_file = PdfFileWriter()
-    input_file = PdfFileReader(open(template_front_path, "rb"))
-
-    input_page = input_file.getPage(0)
-    input_page.mergePage(watermark.getPage(0))
-    # add page from input file to output document
-    output_file.addPage(input_page)
-
-    # finally, write "output" to document-output.pdf
-    with open(pdf_front_path, "wb") as outputStream:
-        output_file.write(outputStream)
-
-    # now do the back
-    watermark_file = os.path.join(work_dir_path, 'watermark_back.pdf')
-    # Create the watermark from an image
-    c = canvas.Canvas(watermark_file)
-    # Draw the image at x, y. I positioned the x,y to be where i like here
-    # x17  w126
-    x = 31
-    size = 102
-    c.drawImage(qr_back_path, x, 155, size, size, anchor='sw')
-    # Add some custom text for good measure
-    # c.setFont("Suisse Int’l Mono", 10)
-    c.setFont("Roboto", 8)
-    c.drawString(x, 52, name)
-    c.drawString(x, 141, address[0:21])
-    c.drawString(x, 128, address[21:42])
-    c.drawString(x, 116, address[42:63])
-    c.drawString(x, 102, address[63:84])
-    c.drawString(x, 90, address[84:])
-    c.save()
-    # Get the watermark file you just created
-    watermark = PdfFileReader(open(watermark_file, "rb"))
-    # Get our files ready
-    output_file = PdfFileWriter()
-    input_file = PdfFileReader(open(template_back_path, "rb"))
-
-    input_page = input_file.getPage(0)
-    input_page.mergePage(watermark.getPage(0))
-    # add page from input file to output document
-    output_file.addPage(input_page)
-
-    # finally, write "output" to document-output.pdf
-    with open(pdf_back_path, "wb") as outputStream:
-        output_file.write(outputStream)
-
-
-def qr_img(qr_cli, output_path, data):
-    """generate a qr code from a path"""
-    qr_cli.clear()
-    qr_cli.add_data(data)
-    qr_cli.make(fit=True)
-    img = qr_cli.make_image(fill_color="black", back_color="white")
-    img.save(output_path)
 
 
 def getcfg(args):
@@ -228,15 +382,11 @@ def write_json(path, data):
 
 def cmd_gen(args=None):
     config = getcfg(args)
-    # TODO random prefix to avoid overwriting values by concurrent executions
 
     long_host = config['long_baseurl']
     short_host = config['short_baseurl']
     target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
-    dry_run = args.simulate
-    # template paths
-    pdf_front_template_path = config['postcard_template_path']['front']
-    pdf_back_template_path = config['postcard_template_path']['back']
+    dry_run = False  # TODO: remove or fix this parameter
 
     # create target folder if not exists
     if not os.path.exists(target_folder):
@@ -245,44 +395,35 @@ def cmd_gen(args=None):
     if dry_run:
         print("-- RUNNING AS SIMULATION --")
 
-    # QR code generation
-    qr_cli = qrcode.QRCode(
-        version=1,
-        error_correction=qrcode.constants.ERROR_CORRECT_L,
-        box_size=10,
-        border=0,
-    )
-
-    # pdf fonts
-    pdfmetrics.registerFont(
-        TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
-    )
-
     # shortener client
     kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
 
     # name generator
     namer = Namer()
 
-    # get the epoch client and the genesis keypair
-    epoch, genesis = get_aeternity(config)
+    # wallet index
+    windex = Windex()
+
+    # if just dump run only the dump
+    if args.dump_json:
+        windex.wallets2json()
+        return
 
     # number of wallet to generate
     n = config['n']
     if args.n is not None:
         n = int(args.n)
     print(f'will generate {n} wallets')
-    for x in range(n):
+    for _ in range(n):
         # generate a new keypair
         keypair = KeyPair.generate()
         # generate name+domain anme
-        n, d = namer.gen_name(keypair.get_address())
+        wallet_name = namer.gen_name(keypair.get_address())
         # generate the url params
         url_params = {
             'p': keypair.get_address(),
             'k': keypair.get_private_key(),
-            'n': n,
-            'd': d,
+            'n': wallet_name,
         }
 
         long_url = requests.Request(
@@ -293,93 +434,87 @@ def cmd_gen(args=None):
         if not dry_run:
             short_id, short_url = kutt.shorten(long_url)
 
-        # folder name
-        wallet_folder = os.path.join(target_folder, short_id)
-        qr_beerapp_path = os.path.join(wallet_folder, FILE_QR_BEERAPP_NAME)
-        qr_pubkey_path = os.path.join(wallet_folder, FILE_QR_PUBKEY_NAME)
-        pdf_front_path = os.path.join(wallet_folder, FILE_PDF_FRONT_NAME)
-        pdf_back_path = os.path.join(wallet_folder, FILE_PDF_BACK_NAME)
-        wallet_path = os.path.join(wallet_folder, FILE_WALLET_NAME)
+        wallet_folder = os.path.join(
+            target_folder, short_id[0:1], short_id).lower()
 
-        # prepare data to be saved locally
-        data = {
-            'id': short_id,
-            'long_url': long_url,
-            'short_url': short_url,
-            'wallet': url_params,
-            'created_at': now(),
-            'txs': []
-        }
+        windex.insert_wallet(
+            keypair.get_private_key(),
+            keypair.get_address(),
+            name=wallet_name,
+            path=wallet_folder,
+            short_url=short_url,
+            long_url=long_url,
+            id=short_id
+        )
 
-        # if simulate just print the data
-        if dry_run:
-            print(json.dumps(data, indent=2))
-            continue
+        print(short_id)
 
-        # make the target directory
-        os.mkdir(wallet_folder)
-        # generate qr code for beer app
-        qr_img(qr_cli, qr_beerapp_path, short_url)
-        # generate qr code for public key
-        qr_img(qr_cli, qr_pubkey_path, keypair.get_address())
-        # save data
-        write_json(wallet_path, data)
-        # create pdfs
-        pdf(pdf_front_template_path,
-            qr_beerapp_path,
-            pdf_back_template_path,
-            qr_pubkey_path,
-            wallet_folder,
-            pdf_front_path,
-            pdf_back_path,
-            data['wallet']['p'],
-            data['wallet']['n'],
-            data['short_url'][8:])  # do not include the 'https://'
-        # done
-        print(data['short_url'])
 
-        if args.fill:
-            # fill the account
-            amount = config['aeternity']['wallet_credit']
-            tx = fill(epoch, genesis, keypair.get_address(),
-                      amount, ensure_balance=args.ensure_balance)
-            if tx['tx'] is not None:
-                data['txs'].append(tx)
-                write_json(wallet_path, data)
+def cmd_postcards(args=None):
+    """generate the postcards that """
+    # wallet index
+    windex = Windex()
+
+    # postcards printer
+    printer = Printer(
+        config['postcard_template_path']['front'],
+        config['postcard_template_path']['back']
+    )
+
+    wallets = windex.get_wallets(status=STATUS_CREATED, operator='>=')
+    for w in wallets:
+        printer.pdf(
+            w['path'],
+            w['public_key'],
+            w['wallet_name'],
+            w['short_url']
+        )
 
 
 def cmd_fill(args=None):
     """command to scan the wallets and fill them with money"""
     config = getcfg(args)
-    # read all the wallet json files
-    target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
     # get the epoch client and the genesis keypair
     epoch, genesis = get_aeternity(config)
     # amount to charget
     amount = config['aeternity']['wallet_credit']
-    # search all
-    with os.scandir(target_folder) as it:
-        for entry in it:
-            if entry.is_dir():
-                wallet_path = os.path.join(entry.path, FILE_WALLET_NAME)
-                with open(wallet_path, 'r') as fp:
-                    data = json.load(fp)
-                    recipient_address = data['wallet']['p']
-                    # check if only to verify
-                    if args.verify_only:
-                        verify(epoch, recipient_address, data['txs'])
-                        continue
-                    # fill
-                    print(
-                        f'fill wallet at path {wallet_path}, {recipient_address}')
-                    tx = fill(epoch, genesis, recipient_address,
-                              amount, ensure_balance=args.ensure_balance)
-                    # claim the name
-                    if args.claim_name:
-                        claim(epoch, genesis, data['wallet'])
-                    if tx['tx'] is not None:
-                        data['txs'].append(tx)
-                        write_json(wallet_path, data)
+
+    limit = int(args.limit)
+    offset = int(args.offset)
+
+    # wallet index
+    windex = Windex()
+    if args.verify_only:
+        wallets = windex.get_wallets(status=STATUS_CREATED, operator='>=', offset=offset, limit=limit)
+        for w in wallets:
+            recipient_address = w['public_key']
+            try:
+              balance = epoch.get_balance(account_pubkey=recipient_address)
+            except Exception as e:
+              balance = 0
+            print(f'wallet {w["id"]}, balance: {balance} - {recipient_address}')
+
+        return
+
+    # get the wallets
+    wallets = windex.get_wallets(
+        status=STATUS_CREATED, 
+        operator='=',
+        offset=offset, 
+        limit=limit)
+    for w in wallets:
+        recipient_address = w['public_key']
+
+        print(f'fill {amount} to wallet {w["id"]}, {recipient_address}')
+        tx_hash = fill(epoch, genesis, recipient_address, amount,
+                       ensure_balance=args.ensure_balance)
+        # update the status
+        windex.set_status(recipient_address, STATUS_FILLED)
+        # record the transaction
+        windex.insert_tx(
+            genesis.get_address(),
+            recipient_address,
+            amount, tx_hash)
 
 
 def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=False):
@@ -392,7 +527,7 @@ def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=Fa
             try:
                 balance = epoch_cli.get_balance(recipient_address)
             except Exception as x:
-                print('account empty', x)
+                print('account empty')
 
             if balance >= amount:
                 print(
@@ -409,18 +544,42 @@ def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=Fa
             f'error running transaction on wallet {recipient_address} , {e}')
         raise e
 
-    return {'tx': tx_hash, 'ts': now()}
+    return tx_hash
 
 
-def claim(epoch_cli, genesis, wallet):
+def cmd_claim(args=None):
+    """command to scan the wallets and fill them with money"""
+    config = getcfg(args)
+    # get the epoch client and the genesis keypair
+    epoch, genesis = get_aeternity(config)
+
+    # wallet index
+    windex = Windex()
+    # get the wallets
+    wallets = windex.get_wallets(status=STATUS_FILLED, operator='>=')
+    for w in wallets:
+        account = KeyPair.from_public_private_key_strings(
+            w['public_key'], w['private_key'])
+        account_name = f"{w['wallet_name']}.aet"
+        # claim the wallet
+        claim(epoch, genesis, account, account_name)
+        # update the status
+        windex.set_status(w['public_key'], STATUS_CLAIMED)
+        # record the transaction
+        # windex.insert_tx(
+        #     genesis.get_address(),
+        #     recipient_address,
+        #     amount, tx_hash)
+
+
+def claim(epoch_cli, genesis, account, name):
     """ claim the wallet name in the chain """
-    k = KeyPair.from_public_private_key_strings(wallet['p'], wallet['k'])
-    name = AEName(wallet['d'], client=epoch_cli)
+    name = AEName(name, client=epoch_cli)
     if name.is_available():
         print('name available')
-        name.preclaim(k)
-        name.claim_blocking(k)
-        name.update(genesis, target=wallet['p'])
+        name.preclaim(account)
+        name.claim_blocking(account)
+        name.update(genesis, target=account.get_address())
     else:
         print(f'name {name} already taken')
 
@@ -428,12 +587,15 @@ def claim(epoch_cli, genesis, wallet):
 def verify(epoch_cli, account, txs):
     try:
         print(f'> account {account}')
+        txs_str = []
         for t in txs:
             txh = t['tx']
             tx = epoch_cli.get_transaction_by_transaction_hash(txh)
-            print(f'--> tx {tx}')
+            txs_str.append(f'  tx: v: {tx.tx.amount} - fee: {tx.tx.fee}')
         balance = epoch_cli.get_balance(account)
-        print(f'balance: {balance} for account: {account}')
+        print(f'  balance: {balance}')
+        print('\n'.join(txs_str))
+
     except Exception as e:
         print(f'error {e}')
 
@@ -471,20 +633,31 @@ if __name__ == '__main__':
                     'help':'number of wallet to generate (overrides the config file)'
                 },
                 {
-                    'names': ['-s', '--simulate'],
-                    'help': 'only simulate the process, do not generate wallets or pdfs',
+                    'names': ['-d', '--dump-json'],
+                    'help': 'do not generate but create the json of the existing wallets',
                     'action': 'store_true',
                     'default': False
                 },
                 {
-                    'names': ['--fill'],
-                    'help': 'fill the account (overrides the config file)',
+                    'names': ['--names'],
+                    'help': 'only update the wallets with names from a json file',
                     'action': 'store_true',
                     'default': False
                 },
+
+            ]
+        },
+        {
+            'name': 'postcards',
+            'help': 'generate and postcards pdf files pdf print '
+        },
+        {
+            'name': 'claim',
+            'help': 'claim the wallets names',
+            'opts': [
                 {
-                    'names': ['-b', '--ensure-balance'],
-                    'help':'ensure that the balance of the account is > than the wallet fill from config (valid only with --fill)',
+                    'names': ['-v', '--verify-only'],
+                    'help':'only verify that the name has been claimed',
                     'action': 'store_true',
                     'default': False
                 }
