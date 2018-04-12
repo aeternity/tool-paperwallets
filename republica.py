@@ -297,6 +297,20 @@ class Windex(object):
             "update wallets set wallet_name = ?, updated_at = ? where public_key = ?",
             (name, datetime.datetime.now(), public_key)
             )
+
+    def update_wallet_balance(self, public_key, balance):
+        self.db_update(
+            "update wallets set balance = ?, updated_at = ? where public_key = ?",
+            (balance, datetime.datetime.now(), public_key)
+        )
+
+    def set_status(self, public_key, new_status):
+        """update the status of a wallet"""
+        self.db_update(
+            'update wallets set wallet_status = ?, updated_at = ? where public_key = ?',
+            (new_status, datetime.datetime.now(), public_key)
+        )
+
     def insert_tx(self, sender_public_key, recipient_public_key, amount, tx_hash, fee=1):
         c = self.db.cursor()
         # Insert a row of data
@@ -327,7 +341,7 @@ class Windex(object):
         # set the offset
         if offset > 0:
             q = f'{q} offset {offset}'
-        
+
         c.execute(q, p)
         rows = c.fetchall()
         c.close()
@@ -353,15 +367,6 @@ class Windex(object):
             wallet_path = os.path.join(w['path'], FILE_WALLET_NAME)
             # save data
             write_json(wallet_path, w)
-
-    def set_status(self, public_key, new_status):
-        """update the status of a wallet"""
-        c = self.db.cursor()
-
-        c.execute('UPDATE wallets SET wallet_status = ?, updated_at = ? WHERE public_key = ?',
-                  (new_status, datetime.datetime.now(), public_key))
-        self.db.commit()
-        c.close()
 
     def close(self):
         self.db.close()
@@ -492,7 +497,12 @@ def cmd_postcards(args=None):
         config['postcard_template_path']['back']
     )
 
-    wallets = windex.get_wallets(status=STATUS_CREATED, operator='>=')
+    limit = int(args.limit)
+    offset = int(args.offset)
+
+    wallets = windex.get_wallets(
+        status=STATUS_CREATED, operator='>=',
+        offset=offset, limit=limit)
     for w in wallets:
         printer.pdf(
             w['path'],
@@ -516,22 +526,25 @@ def cmd_fill(args=None):
     # wallet index
     windex = Windex()
     if args.verify_only:
-        wallets = windex.get_wallets(status=STATUS_CREATED, operator='>=', offset=offset, limit=limit)
+        wallets = windex.get_wallets(
+            status=STATUS_CREATED, operator='>=', offset=offset, limit=limit)
         for w in wallets:
             recipient_address = w['public_key']
             try:
-              balance = epoch.get_balance(account_pubkey=recipient_address)
+                balance = epoch.get_balance(account_pubkey=recipient_address)
             except Exception as e:
-              balance = 0
-            print(f'wallet {w["id"]}, balance: {balance} - {recipient_address}')
+                balance = 0
+            windex.update_wallet_balance(recipient_address, balance)
+            print(
+                f'wallet {w["id"]}, balance: {balance} - {recipient_address}')
 
         return
 
     # get the wallets
     wallets = windex.get_wallets(
-        status=STATUS_CREATED, 
+        status=STATUS_CREATED,
         operator='=',
-        offset=offset, 
+        offset=offset,
         limit=limit)
     for w in wallets:
         recipient_address = w['public_key']
@@ -680,7 +693,19 @@ if __name__ == '__main__':
         },
         {
             'name': 'postcards',
-            'help': 'generate and postcards pdf files pdf print '
+            'help': 'generate and postcards pdf files pdf print ',
+            'opts': [
+                {
+                    'names': ['-o', '--offset'],
+                    'help':'the offset in the list of wallets to create postcards of',
+                    'default': 0
+                },
+                {
+                    'names': ['-l', '--limit'],
+                    'help':'limit the number of wallet to create postcards of, 0 means all',
+                    'default': 0
+                }
+            ]
         },
         {
             'name': 'claim',
