@@ -130,24 +130,25 @@ class Printer(object):
         #
         self.pdf_back_template_path = pdf_back_template_path
 
-        # QR code generation
-        self.qr_cli = qrcode.QRCode(
-            version=1,
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            box_size=10,
-            border=0,
-        )
         # pdf fonts
         pdfmetrics.registerFont(
             TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
         )
 
+    
+
     def qr_img(self, output_path, data):
         """generate a qr code from a path"""
-        self.qr_cli.clear()
-        self.qr_cli.add_data(data)
-        self.qr_cli.make(fit=True)
-        img = self.qr_cli.make_image(fill_color="black", back_color="white")
+        qr_cli = qrcode.QRCode(
+            error_correction=qrcode.constants.ERROR_CORRECT_L,
+            border=0,
+            #version=None,
+            #box_size=10,
+        )
+        qr_cli.clear()
+        qr_cli.add_data(data)
+        qr_cli.make(fit=True)
+        img = qr_cli.make_image(fill_color="black", back_color="white")
         img.save(output_path)
 
     def pdf(self,
