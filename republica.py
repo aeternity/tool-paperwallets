@@ -301,11 +301,12 @@ class Windex(object):
         self.db.commit()
         c.close()
 
-    def update_wallet_name(self, public_key, name):
+    def update_wallet(self, public_key, name, path, short_url, long_url, id):
         self.db_update(
-            "update wallets set wallet_name = ?, updated_at = ? where public_key = ?",
-            (name, datetime.datetime.now(), public_key)
-            )
+            "update wallets set wallet_name = ?, path = ?, id = ?, short_url = ?, long_url = ?, updated_at = ? where public_key = ?",
+            (name, path, id, short_url, long_url,
+             datetime.datetime.now(), public_key)
+        )
 
     def update_wallet_balance(self, public_key, balance):
         self.db_update(
@@ -320,6 +321,10 @@ class Windex(object):
             (new_status, datetime.datetime.now(), public_key)
         )
 
+    def reset_wallet_names(self):
+        """set the wallet_name to null"""
+        self.db_update('update wallets set wallet_name = ?', (None,))
+
     def insert_tx(self, sender_public_key, recipient_public_key, amount, tx_hash, fee=1):
         c = self.db.cursor()
         # Insert a row of data
@@ -329,7 +334,7 @@ class Windex(object):
         self.db.commit()
         c.close()
 
-    def get_wallets(self, status=None, operator='=', offset=0, limit=0):
+    def get_wallets(self, status=None, operator='=', offset=0, limit=0, tag=None):
         """retrieve the list of wallets
         :param status: filter wallets with status
         :param operator: can be '=': only take the wallets with the exacts status, '>=': with status equal or greather, '<': with status less then
@@ -337,13 +342,14 @@ class Windex(object):
         """
         c = self.db.cursor()
         q, p = 'SELECT * FROM wallets', ()
+        
         if status is not None:
             if operator not in ['=', '<', '>', '>=', '<=']:
                 operator = '='
             q += f' WHERE wallet_status {operator} ?'
             p = (status,)
         #  order by id
-        q = f'{q} order by id'
+        q = f'{q} order by public_key'
         # set the limit
         if limit > 0:
             q = f'{q} limit {limit}'
@@ -354,6 +360,7 @@ class Windex(object):
         c.execute(q, p)
         rows = c.fetchall()
         c.close()
+        print(f"fetched {len(rows)} wallets")
         return rows
 
     def get_txs(self, public_key):
