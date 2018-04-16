@@ -535,20 +535,6 @@ def cmd_fill(args=None):
 
     # wallet index
     windex = Windex()
-    if args.verify_only:
-        wallets = windex.get_wallets(
-            status=STATUS_CREATED, operator='>=', offset=offset, limit=limit)
-        for w in wallets:
-            recipient_address = w['public_key']
-            try:
-                balance = epoch.get_balance(account_pubkey=recipient_address)
-            except Exception as e:
-                balance = 0
-            windex.update_wallet_balance(recipient_address, balance)
-            print(
-                f'wallet {w["id"]}, balance: {balance} - {recipient_address}')
-
-        return
 
     # get the wallets
     wallets = windex.get_wallets(
@@ -673,20 +659,54 @@ def claim(epoch_cli, account, account_name):
             f'name {account_name} already taken for {account.get_address()}')
 
 
-def verify(epoch_cli, account, txs):
-    try:
-        print(f'> account {account}')
-        txs_str = []
-        for t in txs:
-            txh = t['tx']
-            tx = epoch_cli.get_transaction_by_transaction_hash(txh)
-            txs_str.append(f'  tx: v: {tx.tx.amount} - fee: {tx.tx.fee}')
-        balance = epoch_cli.get_balance(account)
-        print(f'  balance: {balance}')
-        print('\n'.join(txs_str))
+def cmd_verify(args=None):
 
-    except Exception as e:
-        print(f'error {e}')
+    limit = int(args.limit)
+    offset = int(args.offset)
+
+    epoch, genesis = get_aeternity(config)
+    # wallet index
+    windex = Windex()
+  
+    required_balance = config['aeternity']['wallet_credit']
+    
+    wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
+    for w in wallets:
+        
+        wallet_address = w['public_key']
+        wallet_name = f"{w['wallet_name']}.aet"
+        balance = -1
+
+        # verifiy teh balance
+        try:
+            balance = epoch.get_balance(account_pubkey=wallet_address)
+        except Exception:
+            balance = 0
+        if balance < required_balance:
+            windex.set_status(wallet_address, STATUS_CREATED)
+        windex.update_wallet_balance(wallet_address, balance)
+        
+        # verify the name
+        name = AEName(wallet_name, client=epoch)
+        name_status = 'not claimed'
+        try:
+            if not name.is_available():
+                name_status = 'claimed'
+        except AException as e:
+            name_status = e.payload['reason']
+            
+        account_status = 'wallet {:5}, name {:20}:{:11}, balance: {:4} - {}'.format(
+          w['id'],
+          wallet_name,
+          name_status,
+          balance,
+          wallet_address
+        )
+
+        print(account_status)
+
+        
+    
 
 
 def cmd_purge(args=None):
@@ -846,11 +866,17 @@ if __name__ == '__main__':
         },
         {
             'name': 'verify',
-            'help': 'verify transactions created with the fill command',
+            'help': 'verify the accounts',
             'opts': [
                 {
-                    'names': ['-t', '--transaction'],
-                    'help':'verify a single transaction'
+                    'names': ['-o', '--offset'],
+                    'help':'the offset in the list of wallets to create postcards of',
+                    'default': 0
+                },
+                {
+                    'names': ['-l', '--limit'],
+                    'help':'limit the number of wallet to create postcards of, 0 means all',
+                    'default': 0
                 }
             ]
         }
