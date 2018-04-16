@@ -58,14 +58,14 @@ class KuttCli(object):
         """initialzie the client with the API key"""
         self.api_key = api_key
         self.kuttit_baseurl = base_url
+        self.headers = {'X-API-Key': self.api_key}
         pass
 
     def shorten(self, original_url):
         """returns a short url string"""
         data = {'target': original_url}
-        headers = {'X-API-Key': self.api_key}
         endp = '%s/api/url/submit' % self.kuttit_baseurl
-        r = requests.post(endp, data=data, headers=headers)
+        r = requests.post(endp, data=data, headers=self.headers)
         # see https://github.com/thedevs-network/kutt#types
         url_object = r.json()
         if r.status_code != 200:
@@ -73,19 +73,23 @@ class KuttCli(object):
             raise Exception("error from the shortener service")
         return url_object['id'], url_object['shortUrl']
 
+    def delete(self, short_id):
+        endp = '%s/api/url/deleteurl' % self.kuttit_baseurl
+        print(f'remove {short_id}')
+        requests.post(endp, headers=self.headers, data={'id': short_id})
+
     def purge(self):
         has_urls = True
         while has_urls:
-            headers = {'X-API-Key': self.api_key}
             endp = '%s/api/url/geturls' % self.kuttit_baseurl
-            r = requests.get(endp, headers=headers)
+            r = requests.get(endp, headers=self.headers)
             urls = r.json()
             print('REMOVING %d URLS' % urls['countAll'])
             # loop trought the urls and delete them
             endp = '%s/api/url/deleteurl' % self.kuttit_baseurl
             for u in urls['list']:
                 print('remove [%s] %s ' % (u['id'], u['shortUrl']))
-                requests.post(endp, headers=headers, data={'id': u['id']})
+                requests.post(endp, headers=self.headers, data={'id': u['id']})
             if urls['countAll'] <= 0:
                 has_urls = False
 
@@ -415,8 +419,6 @@ def write_json(path, data):
 def cmd_gen(args=None):
     config = getcfg(args)
 
-    long_host = config['long_baseurl']
-    short_host = config['short_baseurl']
     target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
     dry_run = False  # TODO: remove or fix this parameter
 
@@ -427,27 +429,12 @@ def cmd_gen(args=None):
     if dry_run:
         print("-- RUNNING AS SIMULATION --")
 
-    # shortener client
-    kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
-
-    # name generator
-    namer = Namer()
-
     # wallet index
     windex = Windex()
 
     # if just dump run only the dump
     if args.dump_json:
         windex.wallets2json()
-        return
-
-    # if is update names then do the update
-    if args.update_names:
-        print('update names')
-        for i, w in enumerate(windex.get_wallets()):
-            city_name = namer.get_city(i)
-            windex.update_wallet_name(w['public_key'], city_name)
-            print(f'name {city_name} for {w["id"]} - {w["public_key"]}')
         return
 
     # number of wallet to generate
@@ -458,37 +445,55 @@ def cmd_gen(args=None):
     for _ in range(n):
         # generate a new keypair
         keypair = KeyPair.generate()
-        # generate name+domain anme
-        wallet_name = namer.gen_name(keypair.get_address())
-        # generate the url params
-        url_params = {
-            'p': keypair.get_address(),
-            'k': keypair.get_private_key(),
-            'n': wallet_name,
-        }
-
-        long_url = requests.Request(
-            'GET', long_host, params=url_params).prepare().url
-        # generate the short link
-        short_id = nanoid.generate(size=5)
-        short_url = f'{short_host}/{short_id}'
-        if not dry_run:
-            short_id, short_url = kutt.shorten(long_url)
-
-        wallet_folder = os.path.join(
-            target_folder, short_id[0:1], short_id).lower()
 
         windex.insert_wallet(
             keypair.get_private_key(),
             keypair.get_address(),
-            name=wallet_name,
-            path=wallet_folder,
-            short_url=short_url,
-            long_url=long_url,
-            id=short_id
         )
+        print(keypair.get_address())
 
-        print(short_id)
+
+def cmd_makeurls(args=None):
+    """"assign names to the wallets and generate the urls """
+    # if is update names then do the update
+    # shortener client
+    kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
+    # name generator
+    namer = Namer()
+    # wallet index
+    windex = Windex()
+    #
+    long_host = config['long_baseurl']
+    target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
+
+    limit = int(args.limit)
+    offset = int(args.offset)
+
+    windex.reset_wallet_names()
+    for i, w in enumerate(windex.get_wallets(offset=offset, limit=limit)):
+        wallet_name = namer.get_city(i)
+
+        # generate the url params
+        url_params = {
+            'p': w['public_key'],
+            'k': w['private_key'],
+            'n': wallet_name,
+        }
+        req = requests.Request('GET', long_host, params=url_params)
+        long_url = req.prepare().url
+
+        # generate the short link
+        short_id, short_url = kutt.shorten(long_url)
+        # path
+        wallet_folder = os.path.join(
+            target_folder,
+            short_id[0:1],
+            short_id).lower()
+
+        windex.update_wallet(w['public_key'],
+                             wallet_name, wallet_folder, short_url, long_url, short_id)
+
+        print(f'name {wallet_name} for {short_id} - {w["public_key"]}')
 
 
 def cmd_postcards(args=None):
@@ -688,21 +693,23 @@ def cmd_purge(args=None):
 
     config = getcfg(args)
 
-    # remove the short links
     kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
-    kutt.purge()
+    # wallet index
+    windex = Windex()
+    if args.kutt_shorturl:
+        kutt.purge()
     # delete the wallets
-    target_folder = config.get('target_folder', None)
-    if target_folder is None or target_folder == '.':
-        print(f"invalid target folder {target_folder}")
-        return
-    if not os.path.exists(target_folder):
-        print(f"target folder '{target_folder}' does not exists")
-        return
-    shutil.rmtree(target_folder)
+    for w in windex.get_wallets():
+        if args.shorturl and w['id'] is not None:
+            kutt.delete(w['id'])
+            windex.update_wallet(w['public_key'],
+                                 w['wallet_name'], w['path'], None, w['long_url'], None)
 
-    # recreate the wallet folder
-    os.mkdir(target_folder)
+        if args.workspace and w['path'] is not None:
+            if not os.path.exists(w['path']):
+                continue
+            print(f"delete {w['path']}")
+            shutil.rmtree(w['path'])
 
 
 if __name__ == '__main__':
@@ -729,6 +736,22 @@ if __name__ == '__main__':
                     'default': False
                 },
 
+            ]
+        },
+        {
+            'name': 'makeurls',
+            'help': 'create short and long urls for the wallets',
+            'opts': [
+                {
+                    'names': ['-o', '--offset'],
+                    'help':'the offset in the list of wallets to create postcards of',
+                    'default': 0
+                },
+                {
+                    'names': ['-l', '--limit'],
+                    'help':'limit the number of wallet to create postcards of, 0 means all',
+                    'default': 0
+                }
             ]
         },
         {
@@ -799,7 +822,27 @@ if __name__ == '__main__':
         },
         {
             'name': 'purge',
-            'help': 'delete all the short urls and gnerated wallets'
+            'help': 'delete all the short urls and gnerated wallets',
+            'opts': [
+                {
+                    'names': ['-s', '--shorturl'],
+                    'help':'purge the short url service',
+                    'action': 'store_true',
+                    'default': False
+                },
+                {
+                    'names': ['-k', '--kutt-shorturl'],
+                    'help':'purge the short url service using remote api',
+                    'action': 'store_true',
+                    'default': False
+                },
+                {
+                    'names': ['-w', '--workspace'],
+                    'help':'delete folder in the workdspace',
+                    'action': 'store_true',
+                    'default': False
+                },
+            ]
         },
         {
             'name': 'verify',
