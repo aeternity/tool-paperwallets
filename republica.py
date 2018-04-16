@@ -13,8 +13,11 @@ import shutil
 import nanoid
 import sqlite3
 
-
 import datetime
+
+from queue import Queue
+import threading
+import math
 
 # pdf
 from reportlab.pdfgen import canvas
@@ -33,6 +36,7 @@ from aeternity import Config
 from aeternity.signing import KeyPair
 from aeternity.epoch import EpochClient
 from aeternity.aens import AEName
+from aeternity.exceptions import AException
 
 DEFAULT_TARGET_FOLDER = 'wallets'
 
@@ -598,35 +602,70 @@ def cmd_claim(args=None):
     # get the epoch client and the genesis keypair
     epoch, genesis = get_aeternity(config)
 
+    limit = int(args.limit)
+    offset = int(args.offset)
+
     # wallet index
     windex = Windex()
     # get the wallets
-    wallets = windex.get_wallets(status=STATUS_FILLED, operator='>=')
+    wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
+
+    
+    name_x_thread = 500
+    n_threads = int(math.ceil(len(wallets) / name_x_thread))
+    print(f"will run {n_threads} workers for name claiming")
+
+    name_queue = Queue()
+
+    def process_queue():
+        while True:
+            print(f"{threading.current_thread().name}")
+            p = name_queue.get()
+            claim(epoch, p['account'], p['name'])
+            # claim the wallet
+            # claim(epoch, account, account_name)
+            # update the status
+            #windex.set_status(p['account'].get_address(), STATUS_CLAIMED)
+            name_queue.task_done()
+
+    for _ in range(n_threads):
+        t = threading.Thread(target=process_queue)
+        t.daemon = True
+        t.start()
+
     for w in wallets:
         account = KeyPair.from_public_private_key_strings(
             w['public_key'], w['private_key'])
         account_name = f"{w['wallet_name']}.aet"
-        # claim the wallet
-        claim(epoch, genesis, account, account_name)
-        # update the status
-        windex.set_status(w['public_key'], STATUS_CLAIMED)
-        # record the transaction
-        # windex.insert_tx(
-        #     genesis.get_address(),
-        #     recipient_address,
-        #     amount, tx_hash)
+        # claim(epoch, account, account_name)
+        name_queue.put({'account': account, 'name': account_name})
+
+    name_queue.join()
 
 
-def claim(epoch_cli, genesis, account, name):
+def claim(epoch_cli, account, account_name):
     """ claim the wallet name in the chain """
-    name = AEName(name, client=epoch_cli)
-    if name.is_available():
-        print('name available')
+    name = AEName(account_name, client=epoch_cli)
+
+    do_claim = True
+
+    try:
+        if not name.is_available():
+            do_claim = False
+    except AException as e:
+        print(f'name {account_name} {e} for {account.get_address()}')
+
+    if do_claim:
+        print(f"name {account_name} is available")
         name.preclaim(account)
         name.claim_blocking(account)
-        name.update(genesis, target=account.get_address())
+        name.update(account, 
+          target=account.get_address(),
+                    ttl=36000)
+        print(f"name {account_name} claimed")
     else:
-        print(f'name {name} already taken')
+        print(
+            f'name {account_name} already taken for {account.get_address()}')
 
 
 def verify(epoch_cli, account, txs):
@@ -717,6 +756,16 @@ if __name__ == '__main__':
                     'help':'only verify that the name has been claimed',
                     'action': 'store_true',
                     'default': False
+                },
+                {
+                    'names': ['-o', '--offset'],
+                    'help':'the offset in the list of wallets to create postcards of',
+                    'default': 0
+                },
+                {
+                    'names': ['-l', '--limit'],
+                    'help':'limit the number of wallet to create postcards of, 0 means all',
+                    'default': 0
                 }
             ]
         },
