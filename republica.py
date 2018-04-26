@@ -1,17 +1,16 @@
 #!/usr/bin/env python3
 import argparse
 import json
-import logging
+import pyqrcode
 
 import os
 import requests
 import sys
 
-import qrcode
 import random
 import shutil
-import nanoid
 import sqlite3
+import subprocess
 
 import datetime
 
@@ -23,20 +22,21 @@ import math
 from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
-from PyPDF2 import PdfFileWriter, PdfFileReader
+from reportlab.graphics import renderPDF
+from svglib.svglib import svg2rlg
 
-
-# this is just a hack to get this example to import a parent folder:
-print()
-sys.path.append(
-    os.path.abspath(
-        os.path.join(__file__, '..', '..', 'aepp-sdk-python')))
 
 from aeternity import Config
 from aeternity.signing import KeyPair
 from aeternity.epoch import EpochClient
 from aeternity.aens import AEName
 from aeternity.exceptions import AException
+
+# this is just a hack to get this example to import a parent folder:
+# print()
+# sys.path.append(
+#     os.path.abspath(
+#         os.path.join(__file__, '..', '..', 'aepp-sdk-python')))
 
 DEFAULT_TARGET_FOLDER = 'wallets'
 
@@ -45,8 +45,8 @@ STATUS_FILLED = 20
 STATUS_CLAIMED = 30
 
 
-FILE_QR_BEERAPP_NAME = 'qr_beerapp.png'
-FILE_QR_PUBKEY_NAME = 'qr_pubkey.png'
+FILE_QR_BEERAPP_NAME = 'qr_beerapp.svg'
+FILE_QR_PUBKEY_NAME = 'qr_pubkey.svg'
 FILE_PDF_FRONT_NAME = 'front.pdf'
 FILE_PDF_BACK_NAME = 'back.pdf'
 FILE_WALLET_NAME = 'wallet.json'
@@ -113,7 +113,7 @@ class Namer(object):
         :param seed: the wallet address
         :param sep: word separator for domain
         :param tld: the tld for the domain
-        :return:  the wallet name 
+        :return:  the wallet name
         """
         random.seed(a=seed, version=2)
         a1, a2 = random.sample(self.adjectives, 2)
@@ -132,6 +132,9 @@ class Printer(object):
     """class repsonisible to do the pdf printing"""
 
     def __init__(self, pdf_front_template_path, pdf_back_template_path):
+        """
+
+        """
         # template paths
         #
         self.pdf_front_template_path = pdf_front_template_path
@@ -143,116 +146,172 @@ class Printer(object):
             TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
         )
 
-    
-
     def qr_img(self, output_path, data):
         """generate a qr code from a path"""
-        qr_cli = qrcode.QRCode(
-            error_correction=qrcode.constants.ERROR_CORRECT_L,
-            border=0,
-            #version=None,
-            #box_size=10,
-        )
-        qr_cli.clear()
-        qr_cli.add_data(data)
-        qr_cli.make(fit=True)
-        img = qr_cli.make_image(fill_color="black", back_color="white")
-        img.save(output_path)
+        # qr_cli = qrcode.QRCode(
+        #     error_correction=qrcode.constants.ERROR_CORRECT_L,
+        #     border=0,
+        #     box_size=35,
+        # )
+        # qr_cli.clear()
+        # qr_cli.add_data(data)
+        # qr_cli.make(fit=True)
+        # img = qr_cli.make_image(fill_color="black", back_color="transparent", image_factory=qrcode.image.svg.SvgImage)
+        # img.save(output_path)
+        x = pyqrcode.create(data)
+        x.svg(output_path, scale=8.6, quiet_zone=0, module_color="#000")
 
-    def pdf(self,
-            work_dir_path,
-            address='',
-            name='',
-            url=''):
+    def pdf(self, watermark_file, work_dir_path, output_file):
+        """render the final pdf"""
+        # the template path (background)
+        pdf_front_template_path_abs = os.path.abspath(self.pdf_front_template_path)
+        # the watermark file (foreground)
+        watermark_file_abs = os.path.abspath(watermark_file)
+        watermark_file_abs_clean = os.path.abspath(f"{watermark_file}.clean.pdf")
+        # the final output file
+        pdf_front_path_abs = os.path.abspath(output_file)
+        # run ghostscript
+        cmd = ["gs",
+               "-sDEVICE=pdfwrite",
+               "-sProcessColorModel=DeviceGray",
+               "-sColorConversionStrategy=Gray",
+               "-dOverrideICC",
+               "-o",
+               watermark_file_abs_clean,
+               "-f",
+               watermark_file_abs
+               ]
+        subprocess.run(cmd, shell=False, check=True, stdout=subprocess.DEVNULL)
+        # run pdftk
+        cmd = ["pdftk",
+               watermark_file_abs_clean,
+               "background",
+               pdf_front_template_path_abs,
+               "output",
+               pdf_front_path_abs
+               ]
+        subprocess.run(cmd, shell=False, check=True, stdout=subprocess.DEVNULL)
+
+    def watermark(self,
+                  work_dir_path,
+                  address='',
+                  name='',
+                  url=''):
         """generates the pdf with the wallet qr, name and address"""
 
         # make the target directory
         if not os.path.exists(work_dir_path):
             os.makedirs(work_dir_path, exist_ok=True)
 
-        print(f'generate pdf at {work_dir_path}')
+        print(f'generate watermkark at {work_dir_path}')
 
-        qr_front_path = os.path.join(work_dir_path, FILE_QR_BEERAPP_NAME)
-        qr_back_path = os.path.join(work_dir_path, FILE_QR_PUBKEY_NAME)
-        pdf_front_path = os.path.join(work_dir_path, FILE_PDF_FRONT_NAME)
-        pdf_back_path = os.path.join(work_dir_path, FILE_PDF_BACK_NAME)
-
+        qr_shorturl = os.path.join(work_dir_path, FILE_QR_BEERAPP_NAME)
         # generate qr code for beer app
-        self.qr_img(qr_front_path, url)
-        # generate qr code for public key
-        self.qr_img(qr_back_path, address)
+        self.qr_img(qr_shorturl, url)
 
         # first front
         watermark_file = os.path.join(work_dir_path, 'watermark_front.pdf')
         # Create the watermark from an image
-        c = canvas.Canvas(watermark_file)
+        c = canvas.Canvas(watermark_file, pagesize=(297.638, 419.528))
         # Draw the image at x, y. I positioned the x,y to be where i like here
         # x17  w126
-        x = 304
-        size = 102
-        c.drawImage(qr_front_path, x, 170, size, size, anchor='sw')
+        x, y = 23, 145
+        size = 252
+        # NATIVE
+        # qr_code = qr.QrCodeWidget(qr_shorturl, barFillColor=black, barStrokeColor=black, barStrokeWidth=10)
+        # qr_code = qr.QrCodeWidget()
+        # qr_co
+        # bounds = qr_code.getBounds()
+        # width = bounds[2] - bounds[0]
+        # height = bounds[3] - bounds[1]
+        # _d = Drawing(size, size, transform=[size / width, 0, 0, size / height, 0, 0])
+        # _d.add(qr_code)
+        # renderPDF.draw(_d, c, x, y)
+
+        # SVG
+        _d = svg2rlg(qr_shorturl)
+        _d.width, _d.height = size, size
+        renderPDF.draw(_d, c, x, y)
+        # PNG
+        # c.drawImage(qr_shorturl, x, y, size, size, anchor='sw')
         # Add some custom text for good measure
         # c.setFont("Suisse Int’l Mono", 10)
         c.setFont("Roboto", 8)
-        c.drawString(x, 156, url.replace(
-            'https://', '').replace('http://', ''))
+        y -= 71
+        c.drawString(x, y, url.replace('https://', '').replace('http://', ''))
+        # write the name
+        y -= 51
+        c.drawString(x, y, name)
         c.save()
-        # Get the watermark file you just created
-        watermark = PdfFileReader(open(watermark_file, "rb"))
-        # Get our files ready
-        output_file = PdfFileWriter()
-        input_file = PdfFileReader(open(self.pdf_front_template_path, "rb"))
 
-        input_page = input_file.getPage(0)
-        input_page.mergePage(watermark.getPage(0))
-        # add page from input file to output document
-        output_file.addPage(input_page)
+        # run gs
+        # watermark_gs = f"{watermark_file}.1"
+        # print(watermark_gs)
+        # cmd = f"gs -sDEVICE=pdfwrite -sProcessColorModel=DeviceGray -sColorConversionStrategy=Gray -dOverrideICC -o {watermark_gs}.pdf -f {watermark_file}"
+        # subprocess.run(cmd.split(" "), shell=False, check=True)
+
+        # Get the watermark file you just created
+        # watermark = PdfFileReader(open(watermark_gs, "rb"))
+        # # Get our files ready
+        # output_file = PdfFileWriter()
+        # input_file = PdfFileReader(open(self.pdf_front_template_path, "rb"))
+
+        # input_page = input_file.getPage(0)
+        # input_page.mergePage(watermark.getPage(0))
+        # # add page from input file to output document
+        # output_file.addPage(input_page)
 
         # finally, write "output" to document-output.pdf
-        with open(pdf_front_path, "wb") as outputStream:
-            output_file.write(outputStream)
+        # with open(pdf_front_path, "wb") as outputStream:
+        #     output_file.write(outputStream)
+
         # cleanup
-        os.remove(watermark_file)
-        os.remove(qr_front_path)
+        # os.remove(watermark_file)
+        os.remove(qr_shorturl)
 
-        # now do the back
-        watermark_file = os.path.join(work_dir_path, 'watermark_back.pdf')
-        # Create the watermark from an image
-        c = canvas.Canvas(watermark_file)
-        # Draw the image at x, y. I positioned the x,y to be where i like here
-        # x17  w126
-        x = 31
-        size = 102
-        c.drawImage(qr_back_path, x, 155, size, size, anchor='sw')
-        # Add some custom text for good measure
-        # c.setFont("Suisse Int’l Mono", 10)
-        c.setFont("Roboto", 8)
-        c.drawString(x, 52, name)
-        c.drawString(x, 141, address[0:21])
-        c.drawString(x, 128, address[21:42])
-        c.drawString(x, 116, address[42:63])
-        c.drawString(x, 102, address[63:84])
-        c.drawString(x, 90, address[84:])
-        c.save()
-        # Get the watermark file you just created
-        watermark = PdfFileReader(open(watermark_file, "rb"))
-        # Get our files ready
-        output_file = PdfFileWriter()
-        input_file = PdfFileReader(open(self.pdf_back_template_path, "rb"))
+        # # now do the back
+        # generate qr code for public key
+        # self.qr_img(qr_back_path, address)
+        # qr_back_path = os.path.join(work_dir_path, FILE_QR_PUBKEY_NAME)
+        # pdf_back_path = os.path.join(work_dir_path, FILE_PDF_BACK_NAME)
+        # watermark_file = os.path.join(work_dir_path, 'watermark_back.pdf')
+        # # Create the watermark from an image
+        # c = canvas.Canvas(watermark_file)
+        # # Draw the image at x, y. I positioned the x,y to be where i like here
+        # # x17
+        # x, y = 31, 155
+        # size = 102
+        # renderPDF.draw(svg2rlg(qr_back_path), c, x, y)
+        # # Add some custom text for good measure
+        # # c.setFont("Suisse Int’l Mono", 10)
+        # c.setFont("Roboto", 8)
+        # c.drawString(x, 52, name)
+        # c.drawString(x, 141, address[0:21])
+        # c.drawString(x, 128, address[21:42])
+        # c.drawString(x, 116, address[42:63])
+        # c.drawString(x, 102, address[63:84])
+        # c.drawString(x, 90, address[84:])
+        # c.save()
+        # # Get the watermark file you just created
+        # watermark = PdfFileReader(open(watermark_file, "rb"))
+        # # Get our files ready
+        # output_file = PdfFileWriter()
+        # input_file = PdfFileReader(open(self.pdf_back_template_path, "rb"))
 
-        input_page = input_file.getPage(0)
-        input_page.mergePage(watermark.getPage(0))
-        # add page from input file to output document
-        output_file.addPage(input_page)
+        # input_page = input_file.getPage(0)
+        # input_page.mergePage(watermark.getPage(0))
+        # # add page from input file to output document
+        # output_file.addPage(input_page)
 
-        # finally, write "output" to document-output.pdf
-        with open(pdf_back_path, "wb") as outputStream:
-            output_file.write(outputStream)
+        # # finally, write "output" to document-output.pdf
+        # with open(pdf_back_path, "wb") as outputStream:
+        #     output_file.write(outputStream)
 
-        # remove what is not useful
-        # cleanup
-        os.remove(watermark_file)
-        os.remove(qr_back_path)
+        # # remove what is not useful
+        # # cleanup
+        # os.remove(watermark_file)
+        # os.remove(qr_back_path)
+        return watermark_file
 
 
 class Windex(object):
@@ -289,7 +348,7 @@ class Windex(object):
         :param public: the public address base58 encoded
         :param name: the wallet name without extension
         :param path: the relative path of the wallet fodder
-        :param short_url: the short url of the wallet 
+        :param short_url: the short url of the wallet
         :param long_url: the long url of the wallet
         :param id: the short_id of the wallet
         """
@@ -338,11 +397,11 @@ class Windex(object):
         """retrieve the list of wallets
         :param status: filter wallets with status
         :param operator: can be '=': only take the wallets with the exacts status, '>=': with status equal or greather, '<': with status less then
-        :returns: 
+        :returns:
         """
         c = self.db.cursor()
         q, p = 'SELECT * FROM wallets', ()
-        
+
         if status is not None:
             if operator not in ['=', '<', '>', '>=', '<=']:
                 operator = '='
@@ -507,26 +566,57 @@ def cmd_postcards(args=None):
     """generate the postcards that """
     # wallet index
     windex = Windex()
-
-    # postcards printer
-    printer = Printer(
-        config['postcard_template_path']['front'],
-        config['postcard_template_path']['back']
-    )
-
+    # limit / offset
     limit = int(args.limit)
     offset = int(args.offset)
 
-    wallets = windex.get_wallets(
-        status=STATUS_CREATED, operator='>=',
-        offset=offset, limit=limit)
-    for w in wallets:
-        printer.pdf(
-            w['path'],
-            w['public_key'],
-            w['wallet_name'],
-            w['short_url']
+    wallets = windex.get_wallets(offset=offset, limit=limit)
+    # calculate the number of threads
+    name_x_thread = 300
+    n_threads = int(math.ceil(len(wallets) / name_x_thread))
+    print(f"will run {n_threads} workers for name claiming")
+
+    # output folder
+    out_folder = args.output_folder
+
+    # printing queue
+    queue_pdf = Queue()
+
+    def process_watermark_queue():
+        # postcards printer
+        printer = Printer(
+            config['postcard_template_path']['front'],
+            config['postcard_template_path']['back']
         )
+        while True:
+            print(f"{threading.current_thread().name}")
+            w = queue_pdf.get()
+            watermark_file = printer.watermark(
+                w['path'],
+                w['public_key'],
+                w['wallet_name'],
+                w['short_url']
+            )
+            # create it
+            base_folder = os.path.join(out_folder, threading.current_thread().name.replace('Thread-', ''))
+            if not os.path.exists(base_folder):
+                os.makedirs(base_folder, exist_ok=True)
+
+            output_file = os.path.join(base_folder, f"{w['id']}.pdf").lower()
+            printer.pdf(watermark_file, w['path'], output_file)
+            queue_pdf.task_done()
+
+    # generate the watermark
+    for _ in range(n_threads):
+        t = threading.Thread(target=process_watermark_queue)
+        t.daemon = True
+        t.start()
+
+    for w in wallets:
+        # claim(epoch, account, account_name)
+        queue_pdf.put(w)
+
+    queue_pdf.join()
 
 
 def cmd_fill(args=None):
@@ -598,7 +688,7 @@ def cmd_claim(args=None):
     """command to scan the wallets and fill them with money"""
     config = getcfg(args)
     # get the epoch client and the genesis keypair
-    epoch, genesis = get_aeternity(config)
+    epoch, _ = get_aeternity(config)
 
     limit = int(args.limit)
     offset = int(args.offset)
@@ -608,7 +698,6 @@ def cmd_claim(args=None):
     # get the wallets
     wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
 
-    
     name_x_thread = 500
     n_threads = int(math.ceil(len(wallets) / name_x_thread))
     print(f"will run {n_threads} workers for name claiming")
@@ -623,7 +712,7 @@ def cmd_claim(args=None):
             # claim the wallet
             # claim(epoch, account, account_name)
             # update the status
-            #windex.set_status(p['account'].get_address(), STATUS_CLAIMED)
+            # windex.set_status(p['account'].get_address(), STATUS_CLAIMED)
             name_queue.task_done()
 
     for _ in range(n_threads):
@@ -657,8 +746,8 @@ def claim(epoch_cli, account, account_name):
         print(f"name {account_name} is available")
         name.preclaim(account)
         name.claim_blocking(account)
-        name.update(account, 
-          target=account.get_address(),
+        name.update(account,
+                    target=account.get_address(),
                     ttl=36000)
         print(f"name {account_name} claimed")
     else:
@@ -674,12 +763,12 @@ def cmd_verify(args=None):
     epoch, genesis = get_aeternity(config)
     # wallet index
     windex = Windex()
-  
+
     required_balance = config['aeternity']['wallet_credit']
-    
+
     wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
     for w in wallets:
-        
+
         wallet_address = w['public_key']
         wallet_name = f"{w['wallet_name']}.aet"
         balance = -1
@@ -692,7 +781,7 @@ def cmd_verify(args=None):
         if balance < required_balance:
             windex.set_status(wallet_address, STATUS_CREATED)
         windex.update_wallet_balance(wallet_address, balance)
-        
+
         # verify the name
         name = AEName(wallet_name, client=epoch)
         name_status = 'not claimed'
@@ -701,19 +790,16 @@ def cmd_verify(args=None):
                 name_status = 'claimed'
         except AException as e:
             name_status = e.payload['reason']
-            
+
         account_status = 'wallet {:5}, name {:20}:{:11}, balance: {:4} - {}'.format(
-          w['id'],
-          wallet_name,
-          name_status,
-          balance,
-          wallet_address
+            w['id'],
+            wallet_name,
+            name_status,
+            balance,
+            wallet_address
         )
 
         print(account_status)
-
-        
-    
 
 
 def cmd_purge(args=None):
@@ -794,7 +880,13 @@ if __name__ == '__main__':
                     'names': ['-l', '--limit'],
                     'help':'limit the number of wallet to create postcards of, 0 means all',
                     'default': 0
+                },
+                {
+                    'names': ['-f', '--output-folder'],
+                    'help':'the folder where all the pdf will be stored',
+                    'required': True
                 }
+
             ]
         },
         {
@@ -902,7 +994,8 @@ if __name__ == '__main__':
             subp.add_argument(*sa['names'],
                               help=sa['help'],
                               action=sa.get('action'),
-                              default=sa.get('default'))
+                              default=sa.get('default'),
+                              required=sa.get('required', False))
 
     # parse the arguments
     args = parser.parse_args()
