@@ -1,0 +1,527 @@
+#
+#
+# Deployment configuration for the bar app 
+# 
+# Beer App:  https://beer.aepps.com
+# Short Urls: https://aet.li --> http://shortener.beer.aepps.com
+# Epoch external: https://epoch.beer.aepps.com
+# POS middleware: https://pos.beer.aepps.com
+# 
+# the explorer is deployed indipendendtly
+# Chain Explorer:  https://beer.explorer.aepps.com
+
+
+# here to create volumes if required
+# kubernetes region is us-east-1 
+# volume for chain `aws ec2 create-volume --region=us-east-1 --availability-zone=us-east-1a --size=100 --volume-type=gp2`
+
+
+#   ____      ____  ________  ______        _       _______  _______   
+#  |_  _|    |_  _||_   __  ||_   _ \      / \     |_   __ \|_   __ \  
+#    \ \  /\  / /    | |_ \_|  | |_) |    / _ \      | |__) | | |__) | 
+#     \ \/  \/ /     |  _| _   |  __'.   / ___ \     |  ___/  |  ___/  
+#      \  /\  /     _| |__/ | _| |__) |_/ /   \ \_  _| |_    _| |_     
+#       \/  \/     |________||_______/|____| |____||_____|  |_____|    
+#                                                                      
+
+--- 
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: beer-aepp
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: beer-aepp
+    spec:
+      containers:
+        - name: beer-aepp
+          image: '166568770115.dkr.ecr.eu-central-1.amazonaws.com/republica/beer-aepp'
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: webapp-config
+              mountPath: /app/settings.js
+              subPath: settings.js
+      volumes:
+        - name: webapp-config
+          configMap:
+            name: webapp-config
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: webapp-config
+  namespace: cwp-event
+data:
+  settings.js: |-
+    # TODO: update the public key (should be the same of the wallet in the middleware)
+    // eslint-disable-next-line
+    const SETTINGS = {
+      pos_public_key: 'ak$3TRJBCvcvaegewQkexWVQkt7bEFf1tCvhvj6jfErZQNWyJ4NoyxUwkGrVVWDefxPpPEiY534fTutPaURn72HrGKCYaNWPM',
+      pos_url: 'https://pos.beer.aepps.com',
+      epoch_url: 'epoch.beer.aepps.com'
+    }
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  namespace: cwp-event
+  name: beer-aepp
+spec:
+  selector:
+    app: beer-aepp
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 2015
+
+
+#    ______   ____  ____   ___   _______   _________  
+#  .' ____ \ |_   ||   _|.'   `.|_   __ \ |  _   _  | 
+#  | (___ \_|  | |__| | /  .-.  \ | |__) ||_/ | | \_| 
+#   _.____`.   |  __  | | |   | | |  __ /     | |     
+#  | \____) | _| |  | |_\  `-'  /_| |  \ \_  _| |_    
+#   \______.'|____||____|`.___.'|____| |___||_____|   
+#                                                     
+--- 
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: shortener
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: shortener
+    spec:
+      containers:
+        - name: shortener
+          image: 'registry.gitlab.com/welance/oss/distill:latest'
+          imagePullPolicy: Always
+          args: [ "start", "-c", "/data/configs/settings.docker.yaml", "-r", "/data/wallets.csv"]
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: shortener-config
+              mountPath: /data/configs/settings.docker.yaml
+              subPath: settings.docker.yaml
+            - name: shortener-data
+              mountPath: /data/wallets.csv
+              subPath: wallets.csv
+      volumes:
+        - name: shortener-config
+          configMap:
+            name: shortener-config
+        - name: shortener-data
+          configMap:
+            name: shortener-data
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: shortener-config
+  namespace: cwp-event
+data:
+  settings.docker.yaml: |-
+    server:
+      # TODO:  the apiKey
+      apiKey: change_me
+      host: 0.0.0.0
+      port: 80
+      dbPath: /data/db
+      rootRedirect: https://aeternity.com
+      expiredRedirect: https://aeternity.com
+    shortId:
+      alphabet: abcdefghkmnpqrstuvwxyzABCDEFGHJKLMNPQRSTUVWXYZ23456789
+      length: 6
+      maxRequests: 0
+      ttl: 0
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  namespace: cwp-event
+  name: shortener
+spec:
+  selector:
+    app: shortener
+  ports:
+    - protocol: TCP
+      port: 80
+      targetPort: 80
+
+
+
+---
+kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2beta1
+metadata:
+  name: shortener-hpa
+  namespace: cwp-event
+spec:
+  minReplicas: 1
+  maxReplicas: 1
+  scaleTargetRef:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+    name: shortener
+
+
+
+#     ______  ____  ____       _       _____  ____  _____  
+#   .' ___  ||_   ||   _|     / \     |_   _||_   \|_   _| 
+#  / .'   \_|  | |__| |      / _ \      | |    |   \ | |   
+#  | |         |  __  |     / ___ \     | |    | |\ \| |   
+#  \ `.___.'\ _| |  | |_  _/ /   \ \_  _| |_  _| |_\   |_  
+#   `.____ .'|____||____||____| |____||_____||_____|\____| 
+#                                                          
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: epoch-master
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: epoch-master
+    spec:
+      containers:
+        - name: epoch-master
+          image: aeternity/epoch:v0.10.1
+          ports:
+          - containerPort: 3013
+          - containerPort: 3015
+          - containerPort: 3113
+          volumeMounts:
+          - name: epoch-master-config
+            mountPath: /etc/epoch/epoch-master.yaml
+            subPath: epoch-master.yaml
+          # TODO: this if you want persisten volumes
+          # - name: epoch-data
+          #   mountPath: /data/epoch # TODO: where should we mount this?
+          env:
+          - name: EPOCH_CONFIG
+            value: /etc/epoch/epoch-master.yaml
+      volumes:
+      - name: epoch-master-config
+        configMap:
+          name: epoch-master-config
+      # TODO: this if you want persisten volumes
+      # - name: epoch-data
+      #   awsElasticBlockStore:
+      #     volumeID: vol-0435de7a107286035
+      #     fsType: ext4
+
+---
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: epoch-master-config
+  namespace: cwp-event
+data:
+  epoch-master.yaml: |-
+    peers:
+      - aenode://pp$noKey@localhost:3015
+    
+    http:
+      internal:
+        listen_address: 0.0.0.0
+
+    keys:
+      password: "top secret"
+      dir: ./keys
+
+    chain:
+      persist: true
+
+    mining:
+      expected_mine_rate: 15000
+      autostart: true
+      cuckoo:
+        miner:
+          executable: mean16s-generic
+          extra_args: ""
+          node_bits: 16
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: cwp-event
+  name: epoch-master
+spec:
+  ports:
+  - name: external
+    port: 3013
+    targetPort: 3013
+    protocol: TCP
+  - name: internal
+    port: 3113
+    targetPort: 3113
+    protocol: TCP
+  selector:
+    app: epoch-master
+
+#   ____    ____  _____  ______   ____      ____  _       _______     ________  
+#  |_   \  /   _||_   _||_   _ `.|_  _|    |_  _|/ \     |_   __ \   |_   __  | 
+#    |   \/   |    | |    | | `. \ \ \  /\  / / / _ \      | |__) |    | |_ \_| 
+#    | |\  /| |    | |    | |  | |  \ \/  \/ / / ___ \     |  __ /     |  _| _  
+#   _| |_\/_| |_  _| |_  _| |_.' /   \  /\  /_/ /   \ \_  _| |  \ \_  _| |__/ | 
+#  |_____||_____||_____||______.'     \/  \/|____| |____||____| |___||________| 
+#                                                                               
+
+--- 
+
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: pos-database
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: pos-database
+    spec:
+      containers:
+        - name: pos-database 
+          image: 'registry.hub.docker.com/library/postgres:9.5'
+          imagePullPolicy: Always
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 5432
+              name: http
+              protocol: TCP
+          env:
+            - name: POSTGRES_USER
+              value: 'postgres'
+            - name: POSTGRES_PASSWORD
+              value: 'postgres'
+            - name: POSTGRES_DB
+              value: 'posapp'
+          volumeMounts:
+            # TODO: this if you want persisten volumes
+            # - name: pos-database-data
+            #   mountPath: /var/lib/postgresql/data 
+            - name: pos-database-init
+              mountPath: /docker-entrypoint-initdb.d/init.sql
+              subPath: init.sql
+      volumes:
+        # TODO: this if you want persisten volumes
+        # - name: pos-database-data
+        #   awsElasticBlockStore:
+        #     volumeID: vol-07228d814f7ba4d15
+        #     fsType: ext4
+        - name: pos-database-init
+          configMap:
+            name: pos-database-init
+      
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: pos-database-init
+  namespace: cwp-event
+data:
+  # TODO: after names are assigned to public keys you have to save them in the table 'names'
+  init.sql: |-
+    \connect posapp
+
+    CREATE TABLE IF NOT EXISTS blocks (
+      height integer PRIMARY KEY
+    );
+
+    INSERT INTO blocks(height) VALUES(0) ON CONFLICT(height) DO NOTHING;
+
+    CREATE TABLE IF NOT EXISTS transactions (
+      tx_hash varchar(100) PRIMARY KEY, 
+      tx_signature varchar(200),
+      sender varchar(150),
+      amount integer,
+      scanned_at TIMESTAMP DEFAULT NULL,
+      found_at TIMESTAMP DEFAULT NOW(),
+      block_id integer REFERENCES blocks
+    );
+
+
+    CREATE TABLE IF NOT EXISTS state (
+      id bool PRIMARY KEY DEFAULT TRUE,
+      state varchar(100) DEFAULT 'open',
+      updated_at TIMESTAMP DEFAULT NOW()
+    );
+
+    INSERT INTO state(id) VALUES (true);
+
+    CREATE TABLE IF NOT EXISTS pos_height (
+      block_id integer PRIMARY KEY
+    );
+    INSERT INTO pos_height(block_id) VALUES (0);
+
+
+    CREATE TABLE IF NOT EXISTS names (
+      wallet_name varchar(33) PRIMARY KEY,
+      public_key varchar(150)
+    );
+
+    CREATE UNIQUE INDEX names_public_key_idx ON names(public_key);
+
+---
+kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2beta1
+metadata:
+  name: pos-database-hpa
+  namespace: cwp-event
+spec:
+  minReplicas: 1
+  maxReplicas: 1
+  scaleTargetRef:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+    name: pos-database
+
+
+
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: pos-middleware
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: pos-middleware
+    spec:
+      containers:
+        - name: pos-middleware
+          image: '166568770115.dkr.ecr.eu-central-1.amazonaws.com/republica/pos:cwp'
+          imagePullPolicy: Always
+          args: ["start", "-c", "/etc/pos.json"]
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "2048Mi"
+            limits:
+              cpu: "1000m"
+              memory: "2048Mi"
+          ports:
+            - containerPort: 80
+              name: http
+              protocol: TCP
+          volumeMounts:
+            - name: pos-middleware-config
+              mountPath: /etc/pos.json
+              subPath: pos.json
+      volumes:
+        - name: pos-middleware-config
+          configMap:
+            name: pos-middleware-config
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: pos-middleware-config
+  namespace: cwp-event
+data:
+  # TODO: change the values for SECRETS AND WALLET
+  pos.json: |-
+    {
+      "POSTGRES_HOST": "pos-database",
+      "POSTGRES_USER": "postgres",
+      "POSTGRES_PASSWORD": "postgres",
+      "POSTGRES_DB": "posapp",
+      "APP_SECRET": "abcabc",
+      "POS_ACCESS_KEY": "abvabc",
+      "EPOCH_NODE": "epoch.beer.aepps.com",
+      "WALLET_PRIV": "abc",
+      "WALLET_PUB": "ak$3TRJBCvcvaegewQkexWVQkt7bEFf1tCvhvj6jfErZQNWyJ4NoyxUwkGrVVWDefxPpPEiY534fTutPaURn72HrGKCYaNWPM"
+    }
+
+---
+kind: Service
+apiVersion: v1
+metadata:
+  namespace: cwp-event
+  name: pos-middleware
+spec:
+  selector:
+    app: pos-middleware
+  ports:
+    - protocol: TCP
+      port: 5000
+      targetPort: 5000
+  
+---
+kind: Service
+apiVersion: v1
+metadata:
+  namespace: cwp-event
+  name: pos-database
+spec:
+  selector:
+    app: pos-database
+  ports:
+    - protocol: TCP
+      port: 5432
+      targetPort: 5432
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: shortener-data
+  namespace: cwp-event
+data:
+  # TODO: add the list of exprted short urls if generated locallly
+  wallets.csv: |-
+    28sJ3g,https://beer.aepps.com/?p=ak%243QsdCLh9AKWzc72G9DYRTsxJLaBLvZq63UPbRq4STgihp7GcAcnhRqggHkoxswAJP6w2dkPvRg2AfkjEx7epgQ3gsUvLHR&k=8d15d7ffc9b743a566dd4a4c543c11de13b19e4ab3a46f796f324ca5e888fdd3&n=tirunelveli,2018-06-22T16:06:08Z,,,,
+    2FmxWH,https://beer.aepps.com/?p=ak%243qqccn4aezCWJt41ZcHT2pUg94DDBhGWvCx7f3gqCwioRisUvouLwT6rNXHsKzuZc4ZHh53V7ZHEnqQrMHyoFGXBS3SFsj&k=3cfafa72f30087d9d89f3e32add5c7ff275ad5927a0a85c7b577a3790cc75801&n=torrent,2018-06-22T16:06:11Z,,,,
+    

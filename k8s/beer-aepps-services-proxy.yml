@@ -1,0 +1,207 @@
+# check out the beer-aepps-services for more info
+
+
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cwp-event
+
+--- 
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  namespace: cwp-event
+  name: caddy-proxy
+spec:
+  replicas: 1
+  revisionHistoryLimit: 3
+  template:
+    metadata:
+      labels:
+        app: caddy-proxy
+    spec:
+      containers:
+        - name: caddy-proxy
+          image: 'registry.hub.docker.com/abiosoft/caddy'
+          imagePullPolicy: Always
+          env:
+            - name: ACME_AGREE
+              value: "true"
+          resources:
+            requests:
+              cpu: "1000m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 443
+            - containerPort: 80
+          volumeMounts:
+            - name: caddy-proxy-config
+              mountPath: /etc/Caddyfile
+              subPath: Caddyfile
+            - name: caddy-proxy-certs-wildcard
+              mountPath: /etc/certificates/wildcard.pem
+              subPath: wildcard.pem
+            - name: caddy-proxy-certs-beer
+              mountPath: /etc/certificates/beer.pem
+              subPath: beer.pem
+      volumes:
+        - name: caddy-proxy-config
+          configMap:
+            name: caddy-proxy-config
+        - name: caddy-proxy-certs-wildcard
+          configMap:
+            name: caddy-proxy-certs-wildcard
+        - name: caddy-proxy-certs-beer
+          configMap:
+            name: caddy-proxy-certs-beer
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: caddy-proxy-config
+  namespace: cwp-event
+data:
+  Caddyfile: |-
+    epoch.beer.aepps.com:443 {
+      cors {
+        allow_credentials true
+        allowed_headers   Content-Type
+      }
+      tls {
+        load /etc/certificates
+      }
+
+      rewrite {
+        regexp ^(.*)//(.*)$
+        to {1}/{2}
+      }
+
+      proxy /internal epoch-master:3113 {
+        transparent
+        without /internal
+      }
+
+      proxy / epoch-master:3013 {
+        transparent
+      }
+    }
+
+    pos.beer.aepps.com:443 {
+      cors {
+        allow_credentials true
+      }
+      tls {
+        load /etc/certificates
+      }
+      proxy /socket.io pos-middleware:5000 {
+        websocket      
+      } 
+      proxy / pos-middleware:5000 {
+        transparent
+      }
+    }
+
+    http://shortener.beer.aepps.com {
+      tls off
+      proxy / shortener:80 {
+        transparent 
+      }
+    }
+
+    https://beer.aepps.com {
+      cors {
+        allow_credentials true
+      }
+      rewrite {
+          ext !.css !.js !.woff !.ttf !.gif !.jpg !.mp4
+          regexp .*
+          to {path} /
+      }
+      tls {
+        load /etc/certificates
+      }
+      proxy / beer-aepp:80 {
+        transparent
+      }
+    }
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: caddy-proxy-certs-wildcard
+  namespace: cwp-event
+data:
+  # TODO: copy here the wildcard certificate for the *.beer.aepps.com
+  wildcard.pem: |-
+    -----BEGIN CERTIFICATE-----
+    xxxx
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    yyy
+    -----END CERTIFICATE-----
+    -----BEGIN PRIVATE KEY-----
+    zzz
+    -----END PRIVATE KEY-----
+
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: caddy-proxy-certs-beer
+  namespace: cwp-event
+data:
+  # TODO: copy here the certificate for the beer.aepps.com 
+  beer.pem: |-
+    -----BEGIN CERTIFICATE-----
+    xxxx
+    -----END CERTIFICATE-----
+    -----BEGIN CERTIFICATE-----
+    yyy
+    -----END CERTIFICATE-----
+    -----BEGIN PRIVATE KEY-----
+    zzz
+    -----END PRIVATE KEY-----
+
+
+
+---
+kind: HorizontalPodAutoscaler
+apiVersion: autoscaling/v2beta1
+metadata:
+  name: caddy-proxy-hpa
+  namespace: cwp-event
+spec:
+  minReplicas: 1
+  maxReplicas: 1
+  scaleTargetRef:
+    apiVersion: extensions/v1beta1
+    kind: Deployment
+    name: caddy-proxy
+
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  namespace: cwp-event
+  name: caddy-proxy-lb
+spec:
+  type: LoadBalancer
+  ports:
+  - name: https
+    port: 443
+    targetPort: 443
+    protocol: TCP
+  - name: http
+    port: 80
+    targetPort: 80
+    protocol: TCP
+  selector:
+    app: caddy-proxy
+
