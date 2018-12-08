@@ -1,0 +1,15 @@
+LICENSE
+README.md
+__init__.py
+__pycache__
+aeternity_claim.py
+check.rest
+fonts
+gfycat
+republica.config.json
+republica.config.sample
+republica.sql
+republica_wallets.sqlite
+republica_wallets.sqlite.*
+templates
+watermarks
