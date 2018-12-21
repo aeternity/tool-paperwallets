@@ -2,15 +2,14 @@
 import argparse
 import json
 import pyqrcode
+import getpass
 
 import os
-import requests
 import sys
 
-import random
-import shutil
 import sqlite3
 import subprocess
+from contextlib import contextmanager
 
 import datetime
 
@@ -23,26 +22,20 @@ from reportlab.pdfgen import canvas
 from reportlab.pdfbase.ttfonts import TTFont
 from reportlab.pdfbase import pdfmetrics
 from reportlab.graphics import renderPDF
+from reportlab.lib.units import mm
 from svglib.svglib import svg2rlg
 
-
-from aeternity import Config
-from aeternity.signing import KeyPair
+from aeternity.config import Config
+from aeternity.signing import Account
 from aeternity.epoch import EpochClient
-from aeternity.aens import AEName
-from aeternity.exceptions import AException
 
-# this is just a hack to get this example to import a parent folder:
-# print()
-# sys.path.append(
-#     os.path.abspath(
-#         os.path.join(__file__, '..', '..', 'aepp-sdk-python')))
 
 DEFAULT_TARGET_FOLDER = 'wallets'
 
 STATUS_CREATED = 10
 STATUS_FILLED = 20
 STATUS_CLAIMED = 30
+STATUS_BROADCASTED = 40
 
 
 FILE_QR_BEERAPP_NAME = 'qr_beerapp.svg'
@@ -50,82 +43,6 @@ FILE_QR_PUBKEY_NAME = 'qr_pubkey.svg'
 FILE_PDF_FRONT_NAME = 'front.pdf'
 FILE_PDF_BACK_NAME = 'back.pdf'
 FILE_WALLET_NAME = 'wallet.json'
-
-
-class KuttCli(object):
-
-    def __init__(self, api_key, base_url='https://kutt.it'):
-        """initialzie the client with the API key"""
-        self.api_key = api_key
-        self.kuttit_baseurl = base_url
-        self.headers = {'X-API-Key': self.api_key}
-        pass
-
-    def shorten(self, original_url):
-        """returns a short url string"""
-        data = {'target': original_url}
-        endp = '%s/api/url/submit' % self.kuttit_baseurl
-        r = requests.post(endp, data=data, headers=self.headers)
-        # see https://github.com/thedevs-network/kutt#types
-        url_object = r.json()
-        if r.status_code != 200:
-            print(url_object)
-            raise Exception("error from the shortener service")
-        return url_object['id'], url_object['shortUrl']
-
-    def delete(self, short_id):
-        endp = '%s/api/url/deleteurl' % self.kuttit_baseurl
-        print(f'remove {short_id}')
-        requests.post(endp, headers=self.headers, data={'id': short_id})
-
-    def purge(self):
-        has_urls = True
-        while has_urls:
-            endp = '%s/api/url/geturls' % self.kuttit_baseurl
-            r = requests.get(endp, headers=self.headers)
-            urls = r.json()
-            print('REMOVING %d URLS' % urls['countAll'])
-            # loop trought the urls and delete them
-            endp = '%s/api/url/deleteurl' % self.kuttit_baseurl
-            for u in urls['list']:
-                print('remove [%s] %s ' % (u['id'], u['shortUrl']))
-                requests.post(endp, headers=self.headers, data={'id': u['id']})
-            if urls['countAll'] <= 0:
-                has_urls = False
-
-
-class Namer(object):
-    """generate a name for a key"""
-
-    def __init__(self):
-        self.animals = []
-        self.adjectives = []
-        with open('gfycat/adjectives.json') as fp:
-            self.adjectives = json.load(fp)
-        with open('gfycat/animals.json') as fp:
-            self.animals = json.load(fp)
-        with open('gfycat/cities.json') as fp:
-            self.cities = json.load(fp)
-            self.cities_len = len(self.cities)
-
-    def gen_name(self, seed, sep='-'):
-        """generate the deterministic name for a public key
-        :param seed: the wallet address
-        :param sep: word separator for domain
-        :param tld: the tld for the domain
-        :return:  the wallet name
-        """
-        random.seed(a=seed, version=2)
-        a1, a2 = random.sample(self.adjectives, 2)
-        random.seed(a=seed, version=2)
-        a3 = random.choice(self.animals)
-        return f'{a1}{sep}{a2}{sep}{a3}'
-
-    def get_city(self, index):
-        """return the city name at index (lowercase)"""
-        if index < 0 or index >= self.cities_len:
-            raise Exception(f"index renage is 0-{self.cities_len-1}")
-        return self.cities[index].lower()
 
 
 class Printer(object):
@@ -141,12 +58,7 @@ class Printer(object):
         #
         self.pdf_back_template_path = pdf_back_template_path
 
-        # pdf fonts
-        pdfmetrics.registerFont(
-            TTFont('Roboto', 'fonts/RobotoMono-Regular.ttf')
-        )
-
-    def qr_img(self, output_path, data):
+    def qr_img(self, output_path, data, scale=8.6):
         """generate a qr code from a path"""
         # qr_cli = qrcode.QRCode(
         #     error_correction=qrcode.constants.ERROR_CORRECT_L,
@@ -159,9 +71,9 @@ class Printer(object):
         # img = qr_cli.make_image(fill_color="black", back_color="transparent", image_factory=qrcode.image.svg.SvgImage)
         # img.save(output_path)
         x = pyqrcode.create(data)
-        x.svg(output_path, scale=8.6, quiet_zone=0, module_color="#000")
+        x.svg(output_path, scale=scale, quiet_zone=0, module_color="#000")
 
-    def pdf(self, watermark_file, work_dir_path, output_file):
+    def pdf(self, watermark_file, output_file):
         """render the final pdf"""
         # the template path (background)
         pdf_front_template_path_abs = os.path.abspath(self.pdf_front_template_path)
@@ -173,8 +85,8 @@ class Printer(object):
         # run ghostscript
         cmd = ["gs",
                "-sDEVICE=pdfwrite",
-               "-sProcessColorModel=DeviceGray",
-               "-sColorConversionStrategy=Gray",
+               "-sProcessColorModel=DeviceCMYK",
+               "-sColorConversionStrategy=CMYK",
                "-dOverrideICC",
                "-o",
                watermark_file_abs_clean,
@@ -192,131 +104,106 @@ class Printer(object):
                ]
         subprocess.run(cmd, shell=False, check=True, stdout=subprocess.DEVNULL)
 
+        os.remove(watermark_file_abs_clean)
+        os.remove(watermark_file_abs)
+
     def watermark(self,
-                  work_dir_path,
-                  address='',
-                  name='',
-                  url=''):
+                  outfile,
+                  pubkey,
+                  prvkey,
+                  font):
         """generates the pdf with the wallet qr, name and address"""
 
         # make the target directory
-        if not os.path.exists(work_dir_path):
-            os.makedirs(work_dir_path, exist_ok=True)
+        # if not os.path.exists(work_dir_path):
+        #     os.makedirs(work_dir_path, exist_ok=True)
 
-        print(f'generate watermkark at {work_dir_path}')
+        _specs = {
+            "w": 70,
+            "h": 148,
+            "priv_k": {
+                "qr_w": 50,
+                "qr_h": 50,
+                "qr_x": 9.619,
+                "qr_y": 148 - 50 - 76,
+            },
+            "pub_k": {
+                "color": [68, 0, 39, 0],
+                "font-size": 7,
+                "1st_line_x": 9.619,
+                "1st_line_y": 148 - 2.5 - 134.2,
+                "2nd_line_x": 9.619,
+                "2nd_line_y": 148 - 2.5 - 137.75,
+            }
+        }
 
-        qr_shorturl = os.path.join(work_dir_path, FILE_QR_BEERAPP_NAME)
+        print(f'generate watermkark at {outfile}')
+        # generate qr for the pubkey
+        qr_pubkey = f"{outfile}.pub"
         # generate qr code for beer app
-        self.qr_img(qr_shorturl, url)
+        self.qr_img(qr_pubkey, pubkey)
 
-        # first front
-        watermark_file = os.path.join(work_dir_path, 'watermark_front.pdf')
+        # generate qr for the prvkey
+        qr_prvkey = f"{outfile}.priv"
+        # generate qr code for beer app
+        self.qr_img(qr_prvkey, prvkey, scale=2.3)
+
         # Create the watermark from an image
-        c = canvas.Canvas(watermark_file, pagesize=(297.638, 419.528))
+        c = canvas.Canvas(outfile, pagesize=(_specs.get("w") * mm, _specs.get("h") * mm))
+
         # Draw the image at x, y. I positioned the x,y to be where i like here
+        # DRAW PUBKEY
         # x17  w126
-        x, y = 23, 145
-        size = 252
-        # NATIVE
-        # qr_code = qr.QrCodeWidget(qr_shorturl, barFillColor=black, barStrokeColor=black, barStrokeWidth=10)
-        # qr_code = qr.QrCodeWidget()
-        # qr_co
-        # bounds = qr_code.getBounds()
-        # width = bounds[2] - bounds[0]
-        # height = bounds[3] - bounds[1]
-        # _d = Drawing(size, size, transform=[size / width, 0, 0, size / height, 0, 0])
-        # _d.add(qr_code)
+        # SVG
+        # TODO: currently non necessary
+        # _d = svg2rlg(qr_pubkey)
+        # _d.width, _d.height = size, size
         # renderPDF.draw(_d, c, x, y)
 
+        
+        
+        font_name = os.path.basename(font)
+        pdfmetrics.registerFont(TTFont(font_name, font))
+
+        # TEXT
+        _1st_line_text = f"{pubkey[0:3]}  {pubkey[3:5]} {pubkey[5:8]} {pubkey[8:11]} {pubkey[11:14]} {pubkey[14:17]} {pubkey[17:20]} {pubkey[20:23]} {pubkey[23:26]}"
+        _2nd_line_text = f"{pubkey[26:29]} {pubkey[29:32]} {pubkey[32:35]} {pubkey[35:38]} {pubkey[38:41]} {pubkey[41:44]} {pubkey[44:47]} {pubkey[47:50]} {pubkey[50:]: >3}"
+
+        textobject = c.beginText()
+        textobject.setTextOrigin(_specs.get("pub_k", {}).get("1st_line_x") * mm,
+                                 _specs.get("pub_k", {}).get("1st_line_y") * mm)
+        textobject.setFont(font_name, _specs.get("pub_k", {}).get("font-size"))
+
+        _c, m, y, k = _specs.get("pub_k", {}).get("color")
+        # textobject.setFillColorCMYK(_c, m, y, k)
+
+        textobject.textLine(_1st_line_text)
+        textobject.textLine(_2nd_line_text)
+
+        c.drawText(textobject)
+
+        # DRAW PRIVATE KEY
+        # x17  w126
         # SVG
-        _d = svg2rlg(qr_shorturl)
-        _d.width, _d.height = size, size
-        renderPDF.draw(_d, c, x, y)
-        # PNG
-        # c.drawImage(qr_shorturl, x, y, size, size, anchor='sw')
-        # Add some custom text for good measure
-        # c.setFont("Suisse Int’l Mono", 10)
-        c.setFont("Roboto", 8)
-        y -= 71
-        c.drawString(x, y, url.replace('https://', '').replace('http://', ''))
-        # write the name
-        y -= 51
-        c.drawString(x, y, name)
+        _d = svg2rlg(qr_prvkey)
+        _d.width, _d.height = _specs.get("priv_k", {}).get("qr_w") * mm, _specs.get("priv_k", {}).get("qr_h") * mm
+        renderPDF.draw(_d, c, _specs.get("priv_k", {}).get("qr_x") * mm, _specs.get("priv_k", {}).get("qr_y") * mm)
+        # save
         c.save()
-
-        # run gs
-        # watermark_gs = f"{watermark_file}.1"
-        # print(watermark_gs)
-        # cmd = f"gs -sDEVICE=pdfwrite -sProcessColorModel=DeviceGray -sColorConversionStrategy=Gray -dOverrideICC -o {watermark_gs}.pdf -f {watermark_file}"
-        # subprocess.run(cmd.split(" "), shell=False, check=True)
-
-        # Get the watermark file you just created
-        # watermark = PdfFileReader(open(watermark_gs, "rb"))
-        # # Get our files ready
-        # output_file = PdfFileWriter()
-        # input_file = PdfFileReader(open(self.pdf_front_template_path, "rb"))
-
-        # input_page = input_file.getPage(0)
-        # input_page.mergePage(watermark.getPage(0))
-        # # add page from input file to output document
-        # output_file.addPage(input_page)
-
-        # finally, write "output" to document-output.pdf
-        # with open(pdf_front_path, "wb") as outputStream:
-        #     output_file.write(outputStream)
-
         # cleanup
-        # os.remove(watermark_file)
-        os.remove(qr_shorturl)
-
-        # # now do the back
-        # generate qr code for public key
-        # self.qr_img(qr_back_path, address)
-        # qr_back_path = os.path.join(work_dir_path, FILE_QR_PUBKEY_NAME)
-        # pdf_back_path = os.path.join(work_dir_path, FILE_PDF_BACK_NAME)
-        # watermark_file = os.path.join(work_dir_path, 'watermark_back.pdf')
-        # # Create the watermark from an image
-        # c = canvas.Canvas(watermark_file)
-        # # Draw the image at x, y. I positioned the x,y to be where i like here
-        # # x17
-        # x, y = 31, 155
-        # size = 102
-        # renderPDF.draw(svg2rlg(qr_back_path), c, x, y)
-        # # Add some custom text for good measure
-        # # c.setFont("Suisse Int’l Mono", 10)
-        # c.setFont("Roboto", 8)
-        # c.drawString(x, 52, name)
-        # c.drawString(x, 141, address[0:21])
-        # c.drawString(x, 128, address[21:42])
-        # c.drawString(x, 116, address[42:63])
-        # c.drawString(x, 102, address[63:84])
-        # c.drawString(x, 90, address[84:])
-        # c.save()
-        # # Get the watermark file you just created
-        # watermark = PdfFileReader(open(watermark_file, "rb"))
-        # # Get our files ready
-        # output_file = PdfFileWriter()
-        # input_file = PdfFileReader(open(self.pdf_back_template_path, "rb"))
-
-        # input_page = input_file.getPage(0)
-        # input_page.mergePage(watermark.getPage(0))
-        # # add page from input file to output document
-        # output_file.addPage(input_page)
-
-        # # finally, write "output" to document-output.pdf
-        # with open(pdf_back_path, "wb") as outputStream:
-        #     output_file.write(outputStream)
-
-        # # remove what is not useful
-        # # cleanup
-        # os.remove(watermark_file)
-        # os.remove(qr_back_path)
-        return watermark_file
+        os.remove(qr_pubkey)
+        os.remove(qr_prvkey)
+        # outfile
+        return outfile
 
 
 class Windex(object):
 
-    def __init__(self, db_path='republica_wallets.sqlite'):
+    def __init__(self, db_path='republica_wallets.sqlite', overwrite=False):
+
+        do_create = overwrite if os.path.exists(db_path) else True
+
+        self.db_path = db_path
         self.db = sqlite3.connect(db_path)
 
         def dict_factory(cursor, row):
@@ -327,20 +214,86 @@ class Windex(object):
 
         self.db.row_factory = dict_factory
 
-    def db_update(self, q, p):
-        c = self.db.cursor()
-        # Insert a row of data
-        c.execute(q, p)
-        # Save (commit) the changes
-        self.db.commit()
-        c.close()
+        if do_create:
+            self.execute('DROP TABLE IF EXISTS "wallets"')
+            self.execute('''CREATE TABLE wallets(
+        private_key varchar PRIMARY KEY
+        , public_key varchar not null
+        , wallet_name varchar
+        , balance_ae float not null default '0'
+        , path varchar
+        , wallet_status int not null default '10'
+        , id varchar
+        , short_url varchar
+        , long_url varchar
+        , nonce int not null default 0
+        , created_at datetime default CURRENT_TIMESTAMP
+        , updated_at datetime default CURRENT_TIMESTAMP
+        , tag varchar);''')
+            self.execute('''DROP TABLE IF EXISTS "txs";''')
+            self.execute('''CREATE TABLE txs(
+        tx varchar PRIMARY_KEY
+        , tx_signed varchar
+        , tx_hash varchar
+        , sender_id varchar not null
+        , recipient_id varchar not null
+        , amount_ae float not null default '0'
+        , fee int not null default 0
+        , ttl int not null default 0
+        , nonce int not null default 0
+        , payload varchar
+        , created_at datetime not null default CURRENT_TIMESTAMP
+        , published_at datetime
+        , status int not null default '10'
+        , broadcast_response text default null
+            );''')
 
+    @contextmanager
+    def getcursor(self):
+        """retrieve a cursor from the database"""
+        try:
+            yield self.db.cursor()
+        finally:
+            self.db.commit()
+
+    def execute(self, query, params=()):
+        """run a database update
+        :param query: the query string
+        :param params: the query parameteres
+        """
+        with self.getcursor() as c:
+            try:
+                c.execute(query, params)
+                # logging.debug(c.query)
+            except Exception as e:
+                # logging.error(e)
+                print(e)
+
+    def select(self, query, params=(), many=False):
+        """
+        run a database update
+        :param query: the query string
+        :param params: the query parameteres
+        :param many: if True returns a list of rows, otherwise just on row
+        """
+        with self.getcursor() as c:
+            try:
+                # Insert a row of data
+                c.execute(query, params)
+                if many:
+                    return c.fetchall()
+                else:
+                    return c.fetchone()
+            except Exception as e:
+                # logging.error(e)\
+                print(e)
     # statuses are
     # - created (just the private/public keys)
     # - filled (the account as been filled)
     # - named (the account name has been registered)
     # -
-    def insert_wallet(self, private, public, name=None, path=None, short_url=None, long_url=None, id=None):
+
+    def insert_wallet(self, private, public, name=None, path=None, short_url=None, long_url=None, id=None, tag=None):
         """"
         Insert a wallet inside a sqlite database
 
@@ -352,61 +305,79 @@ class Windex(object):
         :param long_url: the long url of the wallet
         :param id: the short_id of the wallet
         """
-        c = self.db.cursor()
         # Insert a row of data
-        c.execute("insert into wallets(private_key,public_key,wallet_name,path,short_url,long_url,id) values (?,?,?,?,?,?,?)",
-                  (private, public, name, path, short_url, long_url, id))
-        # Save (commit) the changes
-        self.db.commit()
-        c.close()
+        self.execute("insert into wallets(private_key,public_key,wallet_name,path,short_url,long_url,id,tag) values (?,?,?,?,?,?,?,?)",
+                     (private, public, name, path, short_url, long_url, id, tag))
 
     def update_wallet(self, public_key, name, path, short_url, long_url, id):
-        self.db_update(
+        self.execute(
             "update wallets set wallet_name = ?, path = ?, id = ?, short_url = ?, long_url = ?, updated_at = ? where public_key = ?",
             (name, path, id, short_url, long_url,
              datetime.datetime.now(), public_key)
         )
 
     def update_wallet_balance(self, public_key, balance):
-        self.db_update(
-            "update wallets set balance = ?, updated_at = ? where public_key = ?",
+        self.execute(
+            "update wallets set balance_ae = ?, updated_at = ? where public_key = ?",
             (balance, datetime.datetime.now(), public_key)
         )
 
     def set_status(self, public_key, new_status):
         """update the status of a wallet"""
-        self.db_update(
+        self.execute(
             'update wallets set wallet_status = ?, updated_at = ? where public_key = ?',
             (new_status, datetime.datetime.now(), public_key)
         )
 
     def reset_wallet_names(self):
         """set the wallet_name to null"""
-        self.db_update('update wallets set wallet_name = ?', (None,))
+        self.execute('update wallets set wallet_name = ?', (None,))
 
-    def insert_tx(self, sender_public_key, recipient_public_key, amount, tx_hash, fee=1):
-        c = self.db.cursor()
+    def insert_tx(self, tx, sender_id, recipient_id, amount, payload, fee, ttl, nonce,
+                  tx_signed=None,
+                  tx_hash=None,
+                  created_at=datetime.datetime.now(),
+                  published_at=None):
         # Insert a row of data
-        c.execute("insert into txs(public_key_from, public_key_to, amount, fee, ts, tx_hash) values(?,?,?,?,?,?)",
-                  (sender_public_key, recipient_public_key, amount, fee, datetime.datetime.now(), tx_hash))
-        # Save (commit) the changes
-        self.db.commit()
-        c.close()
+        self.execute("""insert into txs
+        (tx, sender_id, recipient_id, amount_ae, payload, fee, ttl, nonce, tx_hash, tx_signed, created_at, published_at) 
+        values(?,?,?,?,?,?,?,?,?,?,?,?)""",
+                     (tx, sender_id, recipient_id, amount, payload, fee, ttl, nonce, tx_hash, tx_signed, datetime.datetime.now(), published_at))
 
-    def get_wallets(self, status=None, operator='=', offset=0, limit=0, tag=None):
+    def update_tx(self, tx, **kwargs):
+        fields, values, ph = [], [], []
+        for k, v in kwargs.items():
+            fields.append(k)
+            values.append(v)
+            ph.append('?')
+        values.append(tx)
+        # Insert a row of data
+        self.execute(f"update txs set  ({','.join(fields)}) = ({','.join(ph)}) where tx = ?", values)
+
+    def get_wallets(self, status=None, operator='=', offset=0, limit=-1, tag=None):
         """retrieve the list of wallets
         :param status: filter wallets with status
         :param operator: can be '=': only take the wallets with the exacts status, '>=': with status equal or greather, '<': with status less then
         :returns:
         """
-        c = self.db.cursor()
         q, p = 'SELECT * FROM wallets', ()
+
+        where_clauses = []
+        where_params = []
 
         if status is not None:
             if operator not in ['=', '<', '>', '>=', '<=']:
                 operator = '='
-            q += f' WHERE wallet_status {operator} ?'
-            p = (status,)
+            where_clauses.append(f' wallet_status {operator} ?')
+            where_params.append(status)
+        if tag is not None:
+            where_clauses.append(f' tag = ?')
+            where_params.append(tag)
+
+        if len(where_clauses) > 0:
+            q = f"{q} WHERE {' AND '.join(where_clauses)}"
+            p = tuple(where_params)
+
         #  order by id
         q = f'{q} order by public_key'
         # set the limit
@@ -416,64 +387,37 @@ class Windex(object):
         if offset > 0:
             q = f'{q} offset {offset}'
 
-        c.execute(q, p)
-        rows = c.fetchall()
-        c.close()
+        rows = self.select(q, p, many=True)
         print(f"fetched {len(rows)} wallets")
         return rows
 
     def get_txs(self, public_key):
         """get the transactions that involve a public key"""
-        c = self.db.cursor()
-        q, p = 'SELECT * FROM txs WHERE public_key_from = ? OR public_key_to = ?', (
-            public_key, public_key)
-        c.execute(q, p)
-        rows = c.fetchall()
-        c.close()
-        return rows
+        q, p = 'SELECT * FROM txs WHERE sender_id = ? OR recipient_id = ?', (public_key, public_key)
+        return self.select(q, p, many=True)
+
+    def get_txs_by_status(self, status, offset=0, limit=-1):
+        """get the transactions that involve a public key"""
+        q, p = 'SELECT * FROM txs WHERE status = ? order by published_at limit ? offset ?', (status, limit, offset)
+        return self.select(q, p, many=True)
 
     def wallets2json(self, status=None):
         """crete a json dump of a wallet in the wallet folder"""
+        accounts = []
         for w in self.get_wallets(status=status):
-            if not os.path.exists(w['path']):
-                os.makedirs(w['path'], exist_ok=True)
+            # if not os.path.exists(w['path']):
+            #     os.makedirs(w['path'], exist_ok=True)
+            accounts.append(w)
             # folder name
-            w['txs'] = self.get_txs(w['public_key'])
-            wallet_path = os.path.join(w['path'], FILE_WALLET_NAME)
+            # w['txs'] = self.get_txs(w['public_key'])
+            # wallet_path = os.path.join(w['path'], FILE_WALLET_NAME)
             # save data
-            write_json(wallet_path, w)
+            # write_json(wallet_path, w)
+        with open(f"{self.db_path}.json", "w") as fp:
+            json.dump(accounts, fp)
 
     def close(self):
         self.db.close()
-
-
-def now():
-    """return the current date as a string in iso format or in a specified format"""
-    return datetime.datetime.utcnow().replace(tzinfo=datetime.timezone.utc).isoformat()
-
-
-def getcfg(args):
-    """utility function to get config"""
-    if args is None or args.config is None:
-        raise Exception('config is empty')
-    return args.config
-
-
-def get_aeternity(config):
-    """get the epoch client and the genesis keypair from config"""
-    # configure epoch client in case we need it
-    epoch = EpochClient(configs=Config(
-        external_host=config['aeternity'].get('node_host'),
-        internal_host=config['aeternity'].get(
-            'node_host_internal'),  # + '/internal'
-        secure_connection=config['aeternity'].get('node_use_https', False)
-    ))
-    # load the genesis keypair
-    gp = config['aeternity']['genesis_public_key']
-    gk = config['aeternity']['genesis_private_key']
-    genesis = KeyPair.from_public_private_key_strings(gp, gk)
-
-    return epoch, genesis
 
 
 def write_json(path, data):
@@ -482,95 +426,62 @@ def write_json(path, data):
         json.dump(data, fp, indent=2)
 
 
+#     ______  ____    ____  ______     ______
+#   .' ___  ||_   \  /   _||_   _ `. .' ____ \
+#  / .'   \_|  |   \/   |    | | `. \| (___ \_|
+#  | |         | |\  /| |    | |  | | _.____`.
+#  \ `.___.'\ _| |_\/_| |_  _| |_.' /| \____) |
+#   `.____ .'|_____||_____||______.'  \______.'
+#
+
+# --output-db-file (paperwallets/data.db.sqlite)
+# --dump_json (False)
+# --tag
 def cmd_gen(args=None):
-    config = getcfg(args)
 
-    target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
-    dry_run = False  # TODO: remove or fix this parameter
-
+    # dry_run = False  # TODO: remove or fix this parameter
     # create target folder if not exists
-    if not os.path.exists(target_folder):
-        os.mkdir(target_folder)
+    os.makedirs(os.path.dirname(args.output_db_file), exist_ok=True)
 
-    if dry_run:
-        print("-- RUNNING AS SIMULATION --")
+    overwrite = False
+    if os.path.exists(args.output_db_file):
+        txt = input("Database file already exists, overwrite? y/n  [y]: ")
+        overwrite = True if txt == 'y' else overwrite
+    # if dry_run:
+    #     print("-- RUNNING AS SIMULATION --")
 
     # wallet index
-    windex = Windex()
-
+    windex = Windex(args.output_db_file, overwrite=overwrite)
     # if just dump run only the dump
     if args.dump_json:
         windex.wallets2json()
         return
-
     # number of wallet to generate
-    n = config['n']
-    if args.n is not None:
-        n = int(args.n)
-    print(f'will generate {n} wallets')
+    n = int(args.n)
+    print(f'will generate {n} accounts')
     for _ in range(n):
         # generate a new keypair
-        keypair = KeyPair.generate()
-
+        keypair = Account.generate()
         windex.insert_wallet(
             keypair.get_private_key(),
             keypair.get_address(),
+            tag=args.tag
         )
         print(keypair.get_address())
 
 
-def cmd_makeurls(args=None):
-    """"assign names to the wallets and generate the urls """
-    # if is update names then do the update
-    # shortener client
-    kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
-    # name generator
-    namer = Namer()
-    # wallet index
-    windex = Windex()
-    #
-    long_host = config['long_baseurl']
-    target_folder = config.get('target_folder', DEFAULT_TARGET_FOLDER)
-
-    limit = int(args.limit)
-    offset = int(args.offset)
-
-    windex.reset_wallet_names()
-    for i, w in enumerate(windex.get_wallets(offset=offset, limit=limit)):
-        wallet_name = namer.get_city(i)
-
-        # generate the url params
-        url_params = {
-            'p': w['public_key'],
-            'k': w['private_key'],
-            'n': wallet_name,
-        }
-        req = requests.Request('GET', long_host, params=url_params)
-        long_url = req.prepare().url
-
-        # generate the short link
-        short_id, short_url = kutt.shorten(long_url)
-        # path
-        wallet_folder = os.path.join(
-            target_folder,
-            short_id[0:1],
-            short_id).lower()
-
-        windex.update_wallet(w['public_key'],
-                             wallet_name, wallet_folder, short_url, long_url, short_id)
-
-        print(f'name {wallet_name} for {short_id} - {w["public_key"]}')
-
-
-def cmd_postcards(args=None):
+# --input_db_file (paperwallets/data.db.sqlite)
+# --template-front
+# --template-back
+def cmd_paperwallets(args=None):
     """generate the postcards that """
     # wallet index
-    windex = Windex()
+    windex = Windex(args.input_db_file)
     # limit / offset
-    limit = int(args.limit)
-    offset = int(args.offset)
+    limit = -1  # int(args.limit)
+    offset = 0  # int(args.offset)
 
-    wallets = windex.get_wallets(offset=offset, limit=limit)
+    wallets = windex.get_wallets(offset=offset, limit=limit, tag=args.tag)
     # calculate the number of threads
     name_x_thread = 300
     n_threads = int(math.ceil(len(wallets) / name_x_thread))
@@ -585,25 +496,34 @@ def cmd_postcards(args=None):
     def process_watermark_queue():
         # postcards printer
         printer = Printer(
-            config['postcard_template_path']['front'],
-            config['postcard_template_path']['back']
+            args.template_front,
+            args.template_back
         )
+        # create a tmp dir
+        workspace = out_folder
+        os.makedirs(workspace, exist_ok=True)
+        # go trough the queue
+
         while True:
             print(f"{threading.current_thread().name}")
             w = queue_pdf.get()
-            watermark_file = printer.watermark(
-                w['path'],
-                w['public_key'],
-                w['wallet_name'],
-                w['short_url']
-            )
-            # create it
-            base_folder = os.path.join(out_folder, threading.current_thread().name.replace('Thread-', ''))
-            if not os.path.exists(base_folder):
-                os.makedirs(base_folder, exist_ok=True)
 
-            output_file = os.path.join(base_folder, f"{w['id']}.pdf").lower()
-            printer.pdf(watermark_file, w['path'], output_file)
+            # generate qr for public key
+            pubkey = w.get("public_key")
+            privkey = w.get("private_key")
+            watermark_path = os.path.join(workspace, f"{pubkey}.watermark.pdf")
+            printer.watermark(
+                watermark_path,
+                pubkey,
+                privkey,
+                args.font
+            )
+            # priv key
+            paperwallet = os.path.join(workspace, f"{pubkey}.pdf")
+            # create it
+            printer.pdf(watermark_path, paperwallet)
+            # cleanup
+            # done
             queue_pdf.task_done()
 
     # generate the watermark
@@ -619,210 +539,102 @@ def cmd_postcards(args=None):
     queue_pdf.join()
 
 
-def cmd_fill(args=None):
+# --amount
+# --keystore
+# --payload ("")
+# --ttl (0)
+# --nonce
+# --input_db_file (paperwallets/data.db.sqlite)
+# --network/id
+def cmd_txs_prepare(args):
     """command to scan the wallets and fill them with money"""
-    config = getcfg(args)
-    # get the epoch client and the genesis keypair
-    epoch, genesis = get_aeternity(config)
+    epoch = EpochClient(offline=True, configs=Config(network_id=args.network_id))
     # amount to charget
-    amount = config['aeternity']['wallet_credit']
-
-    limit = int(args.limit)
-    offset = int(args.offset)
-
+    amount = int(args.amount)
+    nonce = int(args.nonce)
+    fee = int(args.fee)
+    payload = args.payload
+    keystore = args.keystore
+    ttl = args.ttl
+    # load the sign account
+    if not os.path.exists(keystore):
+        print(f"keystore file not found at {keystore}")
+        return
+    pwd = getpass.getpass("Enter the keystore password:")
+    sign_account = Account.from_keystore(keystore, pwd)
+    # tx signer
+    print(f"Using {args.network_id} and {sign_account.get_address()} for signing transactions")
     # wallet index
-    windex = Windex()
+    windex = Windex(args.input_db_file)
 
     # get the wallets
     wallets = windex.get_wallets(
         status=STATUS_CREATED,
         operator='=',
-        offset=offset,
-        limit=limit)
+        tag=args.tag)
     for w in wallets:
-        recipient_address = w['public_key']
-
-        print(f'fill {amount} to wallet {w["id"]}, {recipient_address}')
-        tx_hash = fill(epoch, genesis, recipient_address, amount,
-                       ensure_balance=args.ensure_balance)
-        # update the status
-        windex.set_status(recipient_address, STATUS_FILLED)
-        # record the transaction
-        windex.insert_tx(
-            genesis.get_address(),
-            recipient_address,
-            amount, tx_hash)
-
-
-def fill(epoch_cli, sender_keypair, recipient_address, amount, ensure_balance=False):
-    """fill a wallet with some amount, read the amount from the provided file"""
-    tx_hash = None
-    try:
-        amount_to_fill = amount
-        if ensure_balance:
-            balance = 0
-            try:
-                balance = epoch_cli.get_balance(recipient_address)
-            except Exception as x:
-                print('account empty')
-
-            if balance >= amount:
-                print(
-                    f'sufficient funds for {recipient_address} requested: {balance}/{amount}')
-            else:
-                amount_to_fill = amount - balance
-                print(
-                    f'will fill {amount_to_fill} tokens to {recipient_address}')
-                resp, tx_hash = epoch_cli.spend(keypair=sender_keypair,
-                                                recipient_pubkey=recipient_address,
-                                                amount=amount_to_fill)
-    except Exception as e:
-        print(
-            f'error running transaction on wallet {recipient_address} , {e}')
-        raise e
-
-    return tx_hash
-
-
-def cmd_claim(args=None):
-    """command to scan the wallets and fill them with money"""
-    config = getcfg(args)
-    # get the epoch client and the genesis keypair
-    epoch, _ = get_aeternity(config)
-
-    limit = int(args.limit)
-    offset = int(args.offset)
-
-    # wallet index
-    windex = Windex()
-    # get the wallets
-    wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
-
-    name_x_thread = 500
-    n_threads = int(math.ceil(len(wallets) / name_x_thread))
-    print(f"will run {n_threads} workers for name claiming")
-
-    name_queue = Queue()
-
-    def process_queue():
-        while True:
-            print(f"{threading.current_thread().name}")
-            p = name_queue.get()
-            claim(epoch, p['account'], p['name'])
-            # claim the wallet
-            # claim(epoch, account, account_name)
-            # update the status
-            # windex.set_status(p['account'].get_address(), STATUS_CLAIMED)
-            name_queue.task_done()
-
-    for _ in range(n_threads):
-        t = threading.Thread(target=process_queue)
-        t.daemon = True
-        t.start()
-
-    for w in wallets:
-        account = KeyPair.from_public_private_key_strings(
-            w['public_key'], w['private_key'])
-        account_name = f"{w['wallet_name']}.aet"
-        # claim(epoch, account, account_name)
-        name_queue.put({'account': account, 'name': account_name})
-
-    name_queue.join()
-
-
-def claim(epoch_cli, account, account_name):
-    """ claim the wallet name in the chain """
-    name = AEName(account_name, client=epoch_cli)
-
-    do_claim = True
-
-    try:
-        if not name.is_available():
-            do_claim = False
-    except AException as e:
-        print(f'name {account_name} {e} for {account.get_address()}')
-
-    if do_claim:
-        print(f"name {account_name} is available")
-        name.preclaim(account)
-        name.claim_blocking(account)
-        name.update(account,
-                    target=account.get_address(),
-                    ttl=36000)
-        print(f"name {account_name} claimed")
-    else:
-        print(
-            f'name {account_name} already taken for {account.get_address()}')
-
-
-def cmd_verify(args=None):
-
-    limit = int(args.limit)
-    offset = int(args.offset)
-
-    epoch, genesis = get_aeternity(config)
-    # wallet index
-    windex = Windex()
-
-    required_balance = config['aeternity']['wallet_credit']
-
-    wallets = windex.get_wallets(operator='>=', offset=offset, limit=limit)
-    for w in wallets:
-
-        wallet_address = w['public_key']
-        wallet_name = f"{w['wallet_name']}.aet"
-        balance = -1
-
-        # verifiy teh balance
-        try:
-            balance = epoch.get_balance(account_pubkey=wallet_address)
-        except Exception:
-            balance = 0
-        if balance < required_balance:
-            windex.set_status(wallet_address, STATUS_CREATED)
-        windex.update_wallet_balance(wallet_address, balance)
-
-        # verify the name
-        name = AEName(wallet_name, client=epoch)
-        name_status = 'not claimed'
-        try:
-            if not name.is_available():
-                name_status = 'claimed'
-        except AException as e:
-            name_status = e.payload['reason']
-
-        account_status = 'wallet {:5}, name {:20}:{:11}, balance: {:4} - {}'.format(
-            w['id'],
-            wallet_name,
-            name_status,
-            balance,
-            wallet_address
+        recipient_id = w['public_key']
+        # create the transaction
+        tx = epoch.tx_builder.tx_spend(
+            sign_account.get_address(),
+            recipient_id,
+            amount * 1000000000000000000,
+            payload,
+            fee,
+            ttl,
+            nonce
         )
+        # sign the transaction
+        tx_signed, signature, tx_hash = epoch.sign_transaction(sign_account, tx)
+        windex.insert_tx(tx,
+                         sign_account.get_address(),
+                         recipient_id,
+                         amount,
+                         payload,
+                         fee,
+                         ttl,
+                         nonce,
+                         tx_hash=tx_hash,
+                         tx_signed=tx_signed)
+        nonce += 1
+        print(f'top up {amount}AE to account {recipient_id}')
 
-        print(account_status)
 
-
-def cmd_purge(args=None):
-
-    config = getcfg(args)
-
-    kutt = KuttCli(config['kutt_apikey'], base_url=config['short_baseurl'])
+# --epoch-url ("https://sdk-mainnet.aepps.com")
+# --tag
+# --input_db_file (paperwallets/data.db.sqlite)
+def cmd_txs_broadcast(args):
+    epoch = EpochClient(configs=Config(args.epoch_url))
     # wallet index
-    windex = Windex()
-    if args.kutt_shorturl:
-        kutt.purge()
-    # delete the wallets
-    for w in windex.get_wallets():
-        if args.shorturl and w['id'] is not None:
-            kutt.delete(w['id'])
-            windex.update_wallet(w['public_key'],
-                                 w['wallet_name'], w['path'], None, w['long_url'], None)
+    windex = Windex(args.input_db_file)
+    # get the wallets
+    txs = windex.get_txs_by_status(STATUS_CREATED)
+    for t in txs:
+        try:
+            reply = epoch.broadcast_transaction(t.get("tx_signed"), t.get("tx_hash"))
 
-        if args.workspace and w['path'] is not None:
-            if not os.path.exists(w['path']):
-                continue
-            print(f"delete {w['path']}")
-            shutil.rmtree(w['path'])
+            tx = t.get("tx")
+            up = dict(broadcast_response=reply, status=STATUS_BROADCASTED)
+
+            windex.update_tx(tx, **up)
+            print(f"tx hash {t.get('tx_hash')} broadcasted: {reply}")
+        except Exception as e:
+            print(f"tx hash {t.get('tx_hash')} broadcast error: {e}")
+
+
+# --epoch-url ("https://sdk-mainnet.aepps.com")
+# --input_db_file (paperwallets/data.db.sqlite)
+def cmd_verify(args=None):
+    limit = int(args.limit)
+    offset = int(args.offset)
+    epoch = EpochClient(configs=Config(args.epoch_url))
+    # wallet index
+    windex = Windex(args.input_db_file)
+
+    txs = windex.get_txs_by_status(STATUS_BROADCASTED, limit=limit, offset=offset)
+    for t in txs:
+        executed = epoch.get_transaction_by_hash(hash=t.get("tx_hash"))
+        print(f"tx {t.get('tx_hash')} from {t.get('sender_id')} to {t.get('recipient_id')}, amount {t.get('amount')} height: {executed.block_height}")
 
 
 if __name__ == '__main__':
@@ -830,143 +642,146 @@ if __name__ == '__main__':
     cmds = [
         {
             'name': 'gen',
-            'help': 'generate wallets',
+            'help': 'generate accounts',
             'opts': [
                 {
                     'names': ['-n'],
-                    'help':'number of wallet to generate (overrides the config file)'
+                    'help':'number of accounts to generate (overrides the config file)',
+                    'required': True
                 },
                 {
                     'names': ['-d', '--dump-json'],
-                    'help': 'do not generate but create the json of the existing wallets',
+                    'help': 'do not generate but create the json of the existing accounts',
                     'action': 'store_true',
                     'default': False
                 },
                 {
-                    'names': ['-m', '--update-names'],
-                    'help': 'only update the wallets with names from a json file',
-                    'action': 'store_true',
-                    'default': False
+                    'names': ['-t', '--tag'],
+                    'help': 'tag the accounts with the tag',
+                    'default': None
+                },
+                {
+                    'names': ['-f', '--output-db-file'],
+                    'help': 'sqlite db file name to generate',
+                    'default': 'paperwallets/data.db.sqlite'
                 },
 
             ]
         },
         {
-            'name': 'makeurls',
-            'help': 'create short and long urls for the wallets',
-            'opts': [
-                {
-                    'names': ['-o', '--offset'],
-                    'help':'the offset in the list of wallets to create postcards of',
-                    'default': 0
-                },
-                {
-                    'names': ['-l', '--limit'],
-                    'help':'limit the number of wallet to create postcards of, 0 means all',
-                    'default': 0
-                }
-            ]
-        },
-        {
-            'name': 'postcards',
+            'name': 'paperwallets',
             'help': 'generate and postcards pdf files pdf print ',
             'opts': [
                 {
-                    'names': ['-o', '--offset'],
-                    'help':'the offset in the list of wallets to create postcards of',
-                    'default': 0
+                    'names': ['-f', '--input-db-file'],
+                    'help': 'sqlite db file name to load',
+                    'default': 'paperwallets/data.db.sqlite'
                 },
                 {
-                    'names': ['-l', '--limit'],
-                    'help':'limit the number of wallet to create postcards of, 0 means all',
-                    'default': 0
-                },
-                {
-                    'names': ['-f', '--output-folder'],
+                    'names': ['-o', '--output-folder'],
                     'help':'the folder where all the pdf will be stored',
                     'required': True
-                }
+                },
+                {
+                    'names': ['-t', '--tag'],
+                    'help': 'filter wallets by tag',
+                    'default': None
+                },
+                {
+                    'names': ['--template-front'],
+                    'help': 'the template to use for the front',
+                    'required': True
+                },
+                {
+                    'names': ['--template-back'],
+                    'help': 'the template to use for the back',
+                    'default': '/data/assets/paper-wallet-blank-front.pdf'
+                },
+                {
+                    'names': ['--font'],
+                    'help': 'the font ttf file to use (default Roboto)',
+                    'default': '/data/assets/IBMPlexMono-Thin.ttf'
+                },
 
             ]
         },
         {
-            'name': 'claim',
-            'help': 'claim the wallets names',
+            'name': 'txs-prepare',
+            'help': 'create the transactions',
             'opts': [
                 {
-                    'names': ['-v', '--verify-only'],
-                    'help':'only verify that the name has been claimed',
-                    'action': 'store_true',
-                    'default': False
+                    'names': ['-f', '--input-db-file'],
+                    'help': 'sqlite db file name to load',
+                    'default': 'paperwallets/data.db.sqlite'
                 },
                 {
-                    'names': ['-o', '--offset'],
-                    'help':'the offset in the list of wallets to create postcards of',
+                    'names': ['--amount'],
+                    'help':'amount to fill',
+                    'required': True
+                },
+                {
+                    'names': ['--nonce'],
+                    'help':'the starting nonce',
+                    'required': True
+                },
+                {
+                    'names': ['--fee'],
+                    'help':'the transactions fee (default: 18000)',
+                    'default': 18000
+                },
+                {
+                    'names': ['--ttl'],
+                    'help':'transaction ttl (default: 0)',
                     'default': 0
                 },
                 {
-                    'names': ['-l', '--limit'],
-                    'help':'limit the number of wallet to create postcards of, 0 means all',
-                    'default': 0
-                }
+                    'names': ['--payload'],
+                    'help':'transaction payload (default: empoty)',
+                    'default': ''
+                },
+                {
+                    'names': ['--keystore'],
+                    'help': 'the keystore to sign the transaction',
+                    'required': True
+                },
+                {
+                    'names': ['--network-id'],
+                    'help': 'the network id of the chain to use (default ae_mainnet)',
+                    'default': 'ae_mainnet'
+                },
+                {
+                    'names': ['-t', '--tag'],
+                    'help': 'filter accounts by tag',
+                    'default': None
+                },
+
             ]
         },
         {
-            'name': 'fill',
-            'help': 'fill the accounts generated with gen command with the amount specified in config',
+            'name': 'txs-broadcast',
+            'help': 'post the transactions to the chain',
             'opts': [
                 {
-                    'names': ['-b', '--ensure-balance'],
-                    'help':'ensure that the balance of the account is > than the wallet fill from config',
-                    'action': 'store_true',
-                    'default': True
+                    'names': ['-f', '--input-db-file'],
+                    'help': 'sqlite db file name to load',
+                    'default': 'paperwallets/data.db.sqlite'
                 },
                 {
-                    'names': ['-v', '--verify-only'],
-                    'help':'only verify the balance and the transactions, do not fill',
-                    'action': 'store_true',
-                    'default': False
-                },
-                {
-                    'names': ['-o', '--offset'],
-                    'help':'the offset in the list of wallets to start filling from',
-                    'default': 0
-                },
-                {
-                    'names': ['-l', '--limit'],
-                    'help':'limit the number of wallet to fill, 0 means no limit',
-                    'default': 0
+                    'names': ['--epoch-url'],
+                    'help':'the url of the node to use (default https://sdk-mainnet.aepps.com)',
+                    'default': 'https://sdk-mainnet.aepps.com'
                 }
-            ]
-        },
-        {
-            'name': 'purge',
-            'help': 'delete all the short urls and gnerated wallets',
-            'opts': [
-                {
-                    'names': ['-s', '--shorturl'],
-                    'help':'purge the short url service',
-                    'action': 'store_true',
-                    'default': False
-                },
-                {
-                    'names': ['-k', '--kutt-shorturl'],
-                    'help':'purge the short url service using remote api',
-                    'action': 'store_true',
-                    'default': False
-                },
-                {
-                    'names': ['-w', '--workspace'],
-                    'help':'delete folder in the workdspace',
-                    'action': 'store_true',
-                    'default': False
-                },
             ]
         },
         {
             'name': 'verify',
-            'help': 'verify the accounts',
+            'help': 'verify the executed transactions',
             'opts': [
+                {
+                    'names': ['-f', '--input-db-file'],
+                    'help': 'sqlite db file name to load',
+                    'default': 'paperwallets/data.db.sqlite'
+                },
                 {
                     'names': ['-o', '--offset'],
                     'help':'the offset in the list of wallets to create postcards of',
@@ -975,14 +790,17 @@ if __name__ == '__main__':
                 {
                     'names': ['-l', '--limit'],
                     'help':'limit the number of wallet to create postcards of, 0 means all',
-                    'default': 0
+                    'default': -1
+                },
+                {
+                    'names': ['-t', '--tag'],
+                    'help': 'filter wallets by tag',
+                    'default': None
                 }
             ]
         }
     ]
     parser = argparse.ArgumentParser()
-    parser.add_argument(
-        '-c', '--cfg', help='path to configruatino file ', default='republica.config.json')
     subparsers = parser.add_subparsers()
     subparsers.required = True
     subparsers.dest = 'command'
@@ -999,16 +817,6 @@ if __name__ == '__main__':
 
     # parse the arguments
     args = parser.parse_args()
-
-    # exit if there is no config file
-    if not os.path.exists(args.cfg):
-        print('cannot find config file "%s"' % args.cfg)
-        parser.print_help()
-        exit(1)
-    # load setting from config file
-    with open(args.cfg, 'r') as fp:
-        config = json.load(fp)
-    args.__setattr__('config', config)
     # call the command with our args
     ret = getattr(sys.modules[__name__], 'cmd_{0}'.format(
         args.command.replace('-', '_')))(args)

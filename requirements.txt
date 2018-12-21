@@ -1,0 +1,7 @@
+--extra-index-url https://test.pypi.org/simple/
+aepp-sdk==2.0.0a1
+svglib==0.9.0b0
+PyQRCode==1.2.1
+cu2qu==1.4.0
+fontTools==3.25.0
+

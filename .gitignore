@@ -1,3 +1,6 @@
 wallets/*
 republica.config.json
 republica_wallets.sqlite
+republica_wallets.sqlite**
+republica_postcards
+data
