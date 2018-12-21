@@ -578,7 +578,7 @@ def cmd_txs_prepare(args):
         tx = epoch.tx_builder.tx_spend(
             sign_account.get_address(),
             recipient_id,
-            amount * 1000000000000000000,
+            amount * 1000000000000000000 + 20000, # plus fee
             payload,
             fee,
             ttl,
@@ -690,17 +690,17 @@ if __name__ == '__main__':
                 {
                     'names': ['--template-front'],
                     'help': 'the template to use for the front',
-                    'required': True
+                    'default': '/data/assets/paper-wallet-blank-front.pdf'
                 },
                 {
                     'names': ['--template-back'],
                     'help': 'the template to use for the back',
-                    'default': '/data/assets/paper-wallet-blank-front.pdf'
+                    'default': '/data/assets/paper-wallet-back.pdf'
                 },
                 {
                     'names': ['--font'],
                     'help': 'the font ttf file to use (default Roboto)',
-                    'default': '/data/assets/IBMPlexMono-Thin.ttf'
+                    'default': '/data/assets/IBMPlexMono-Regular.ttf'
                 },
 
             ]

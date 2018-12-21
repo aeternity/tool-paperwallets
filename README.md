@@ -6,30 +6,19 @@
 
 ## Requirements
 
-- docker 
-- python sdk
+- docker
 
 ## Setup
 
-In the example we will be working in the folder `paperw` and using `sdk-testnet` as target network
+In the example we will be working in the folder `data` and using `sdk-testnet` as target network.
 
-First step is to build the docker image
-
-```
-$ tar xzf paperwallet.tgz
-$ cd paperwallets
-$ docker build -t paperwallets .
-```
-Once the image is built you can use the following steps to create the paperwallets
-
-To install the python sdk refer to the instructions on the [sdk readme](https://github.com/aeternity/aepp-sdk-python/tree/develop#installation)
 
 ## Step 1 - Create the wallets
 
 Create 100 accounts
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw paperwallets \
+docker run -it --volume=$PWD/data:/data/paperw aeternity/paperwallets \
   gen -n 100 -f /data/paperw/data.db.sqlite
 ```
 
@@ -57,7 +46,7 @@ $ aecli -u https://sdk-testnet.aepps.com inspect ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZ
 <account>
   Balance ___________________________________________ 65667431000000000007157984
   Id ________________________________________________ ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
-  Nonce _____________________________________________ 0
+  Nonce _____________________________________________ 0 #
 </account>
 ```
 
@@ -66,16 +55,18 @@ $ aecli -u https://sdk-testnet.aepps.com inspect ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZ
 $ aecli inspect ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
 ```
 
-Create then the transactions (the amount is in AE)
+Create then the transactions (the amount is in AE).
+The nonce to use is the one found in with the previous command + 1, in this case, since the Nonce from the previous command is 0, we need to use for the next command.
+
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw paperwallets \
+docker run -it --volume=$PWD/data:/data/paperw aeternity/paperwallets \
  txs-prepare \
  -f /data/paperw/data.db.sqlite \
  --amount 10 \
- --nonce 1 \
+ --nonce 105 \
  --keystore /data/paperw/sender.json \
- --network-id ae_uat # remove this parameter for mainnet
+ --network-id ae_uat
 
 Enter the keystore password:
 **********
@@ -86,10 +77,10 @@ Enter the keystore password:
 ## Step 3 - Post the transactions to the chain
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
+docker run -it --volume=$PWD/data:/data/paperw  aeternity/paperwallets \
  txs-broadcast \
  -f /data/paperw/data.db.sqlite \
- --epoch-url https://sdk-testnet.aepps.com
+ --epoch-url https://sdk-testnet.aepps.com # remove this parameter for mainnet
 ```
 
 ⚠️ for mainnet remove the `--epoch-url` parameter
@@ -99,13 +90,15 @@ docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
 The last part will generate the actual pdf in the `paperw/pdfs` folder
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
+docker run -it --volume=$PWD/data:/data/paperw  aeternity/paperwallets \
  paperwallets \
  -f /data/paperw/data.db.sqlite \
- -o /data/paperw/pdfs \
- --template-front /data/assets/paper-wallet-blank-front.pdf
+ -o /data/paperw/pdfs
 ```
 
+## Step 5 - get the back pdf for the paper wallet
+
+You can download the back side of the template [here](https://github.com/aeternity/tool-paperwallets/raw/develop/assets/paper-wallet-back.pdf) 
 
 ## Notes
 
