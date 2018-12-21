@@ -9,10 +9,11 @@ RUN apk --update add libxml2-dev libxslt-dev libffi-dev musl-dev libgcc openssl-
 
 COPY republica.py /data/republica.py
 COPY requirements.txt /data/requirements.txt
-COPY paperw /paperw
+
 COPY assets /data/assets
 
 RUN pip install -r /data/requirements.txt
+RUN mkdir /paperw
 
 ENTRYPOINT [ "python", "/data/republica.py"]
 
