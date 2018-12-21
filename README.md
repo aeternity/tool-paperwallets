@@ -98,7 +98,7 @@ docker run -it --volume=$PWD/data:/data/paperw  aeternity/paperwallets \
 
 ## Step 5 - get the back pdf for the paper wallet
 
-You can download the back side of the template [here](https://github.com/aeternity/tool-paperwallets/raw/develop/assets/paper-wallet-back.pdf) 
+You can download the back side of the template [here](https://github.com/aeternity/tool-paperwallets/raw/master/assets/paper-wallet-back.pdf) 
 
 ## Notes
 
