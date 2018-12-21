@@ -11,7 +11,7 @@
 
 ## Setup
 
-In the example we will be working in the folder `paperw` and using `sdk-edgenet` as target network
+In the example we will be working in the folder `paperw` and using `sdk-testnet` as target network
 
 First step is to build the docker image
 
@@ -24,12 +24,11 @@ Once the image is built you can use the following steps to create the paperwalle
 
 To install the python sdk refer to the instructions on the [sdk readme](https://github.com/aeternity/aepp-sdk-python/tree/develop#installation)
 
-### Step 1 - Create the wallets
+## Step 1 - Create the wallets
 
 Create 100 accounts
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw --volume=$PWD/republica.py:/data/republica.py paperwallets \
 docker run -it --volume=$PWD/data:/data/paperw paperwallets \
   gen -n 100 -f /data/paperw/data.db.sqlite
 ```
@@ -53,7 +52,8 @@ Enter the account password
 <account>
   Address ___________________________________________ ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
 </account>
-$ aecli -u https://sdk-edgenet.aepps.com inspect ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
+
+$ aecli -u https://sdk-testnet.aepps.com inspect ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
 <account>
   Balance ___________________________________________ 65667431000000000007157984
   Id ________________________________________________ ak_2iBPH7HUz3cSDVEUWiHg76MZJ6tZooVNBmmxcgVK6VV8KAE688
@@ -75,7 +75,7 @@ docker run -it --volume=$PWD/data:/data/paperw paperwallets \
  --amount 10 \
  --nonce 1 \
  --keystore /data/paperw/sender.json \
- --network-id ae_devnet # remove this parameter for mainnet
+ --network-id ae_uat # remove this parameter for mainnet
 
 Enter the keystore password:
 **********
@@ -89,7 +89,7 @@ Enter the keystore password:
 docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
  txs-broadcast \
  -f /data/paperw/data.db.sqlite \
- --epoch-url https://sdk-edgenet.aepps.com
+ --epoch-url https://sdk-testnet.aepps.com
 ```
 
 ⚠️ for mainnet remove the `--epoch-url` parameter
@@ -99,7 +99,7 @@ docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
 The last part will generate the actual pdf in the `paperw/pdfs` folder
 
 ```
-docker run -it --volume=$PWD/data:/data/paperw --volume=$PWD/republica.py:/data/republica.py paperwallets \
+docker run -it --volume=$PWD/data:/data/paperw  paperwallets \
  paperwallets \
  -f /data/paperw/data.db.sqlite \
  -o /data/paperw/pdfs \
