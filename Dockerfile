@@ -30,12 +30,11 @@ RUN apt update && apt install -y \
       libssl-dev \
       curl
 
-COPY republica.py /data/republica.py
 COPY requirements.txt /data/requirements.txt
-
 COPY assets /data/assets
-
 RUN pip install -r /data/requirements.txt
+COPY republica.py /data/republica.py
+
 RUN mkdir /paperw
 
 ENTRYPOINT [ "python", "/data/republica.py"]

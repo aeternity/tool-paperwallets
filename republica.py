@@ -548,75 +548,80 @@ def cmd_paperwallets(args=None):
 # --input_db_file (paperwallets/data.db.sqlite)
 # --network/id
 def cmd_txs_prepare(args):
-    """command to scan the wallets and fill them with money"""
-    node_url = os.environ.get("NODE_URL", "http://127.0.0.1:3013")
-    node_cli = NodeClient(Config(
-        external_url=node_url,
-        offline=True,
-        network_id=args.network_id
-    ))
-    # amount to charge
-    amount = amount_to_aettos(args.amount)
-    nonce = int(args.nonce)
-    fee = amount_to_aettos(args.fee)
-    payload = args.payload
-    keystore = args.keystore
-    ttl = args.ttl
-    # load the sign account
-    if not os.path.exists(keystore):
-        print(f"keystore file not found at {keystore}")
-        return
-    pwd = getpass.getpass("Enter the keystore password:")
-    sign_account = Account.from_keystore(keystore, pwd)
-    # tx signer
-    print(f"Using {args.network_id} and {sign_account.get_address()} for signing transactions")
-    # wallet index
-    windex = Windex(args.input_db_file)
-    # record the total amount
-    total_amount = 0
-    # get the wallets
-    wallets = windex.get_wallets(
-        status=STATUS_CREATED,
-        operator='=',
-        tag=args.tag)
-    for w in wallets:
-        recipient_id = w['public_key']
-        # calculate teh tx fee
-        # create the transaction
-        tx = node_cli.tx_builder.tx_spend(
-            sign_account.get_address(),
-            recipient_id,
-            amount, # plus fee
-            payload,
-            fee,
-            ttl,
-            nonce
-        )
-        # sign the transaction
-        tx_s = node_cli.sign_transaction(sign_account, tx)
-        windex.insert_tx(tx.tx,
-                         sign_account.get_address(),
-                         recipient_id,
-                         amount,
-                         payload,
-                         fee,
-                         ttl,
-                         nonce,
-                         tx_hash=tx_s.hash,
-                         tx_signed=tx_s.tx)
-        nonce += 1
-        total_amount += amount
-        print(f'top up {format_amount(amount)} to account {recipient_id}')
+    try:
+        """command to scan the wallets and fill them with money"""
+        node_url = os.environ.get("NODE_URL", args.node_url)
+        node_cli = NodeClient(Config(
+            external_url=node_url,
+            offline=True,
+        ))
+        # amount to charge
+        amount = amount_to_aettos(args.amount)
+        fee = amount_to_aettos(args.fee)
+        payload = args.payload
+        keystore = args.keystore
+        ttl = args.ttl
+        # load the sign account
+        if not os.path.exists(keystore):
+            print(f"keystore file not found at {keystore}")
+            return
+        pwd = getpass.getpass("Enter the keystore password:")
+        sign_account = Account.from_keystore(keystore, pwd)
+        # tx signer
+        print(f"Using node at {node_cli.config.api_url} {sign_account.get_address()} for signing transactions")
+        # get the current nonce
+        nonce = node_cli.get_account_by_pubkey(pubkey=sign_account.get_address()).nonce + 1
+        print(f"Starting from nonce {nonce}")
+        # wallet index
+        windex = Windex(args.input_db_file)
+        # record the total amount
+        total_amount = 0
+        # get the wallets
+        wallets = windex.get_wallets(
+            status=STATUS_CREATED,
+            operator='=',
+            tag=args.tag)
+        for w in wallets:
+            recipient_id = w['public_key']
+            # calculate teh tx fee
+            # create the transaction
+            tx = node_cli.tx_builder.tx_spend(
+                sign_account.get_address(),
+                recipient_id,
+                amount, # plus fee
+                payload,
+                fee,
+                ttl,
+                nonce
+            )
+            # sign the transaction
+            tx_s = node_cli.sign_transaction(sign_account, tx)
+            windex.insert_tx(tx.tx,
+                             sign_account.get_address(),
+                             recipient_id,
+                             amount,
+                             payload,
+                             fee,
+                             ttl,
+                             nonce,
+                             tx_hash=tx_s.hash,
+                             tx_signed=tx_s.tx)
+            nonce += 1
+            total_amount += amount
+            print(f'top up {format_amount(amount)} to account {recipient_id}')
 
-    print(f"A total of {format_amount(total_amount)} (plus fees) will be transfered from {sign_account.get_address()}")
+        print(f"A total of {format_amount(total_amount)} (plus fees) will be transfered from {sign_account.get_address()}")
+    except Exception as e:
+        print(e)
 
 
 # --epoch-url ("https://sdk-mainnet.aepps.com")
 # --tag
 # --input_db_file (paperwallets/data.db.sqlite)
 def cmd_txs_broadcast(args):
+    node_url = os.environ.get("NODE_URL", args.node_url)
     node_cli = NodeClient(Config(
-        external_url=args.node_url
+        external_url=node_url
     ))
     # wallet index
     windex = Windex(args.input_db_file)
@@ -640,9 +645,12 @@ def cmd_txs_broadcast(args):
 # --epoch-url ("https://sdk-mainnet.aepps.com")
 # --input_db_file (paperwallets/data.db.sqlite)
 def cmd_txs_verify(args=None):
+    node_url = os.environ.get("NODE_URL", args.node_url)
     limit = int(args.limit)
     offset = int(args.offset)
-    node_cli = NodeClient(Config(args.node_url))
+    node_cli = NodeClient(Config(
+        external_url=node_url
+    ))
     # wallet index
     windex = Windex(args.input_db_file)
 
@@ -737,11 +745,6 @@ if __name__ == '__main__':
                     'required': True
                 },
                 {
-                    'names': ['--nonce'],
-                    'help':'the starting nonce',
-                    'required': True
-                },
-                {
                     'names': ['--fee'],
                     'help':'the transactions fee (default: auto)',
                     'default': 0
@@ -753,7 +756,7 @@ if __name__ == '__main__':
                 },
                 {
                     'names': ['--payload'],
-                    'help':'transaction payload (default: empoty)',
+                    'help':'transaction payload (default: empty)',
                     'default': ''
                 },
                 {
@@ -762,15 +765,15 @@ if __name__ == '__main__':
                     'required': True
                 },
                 {
-                    'names': ['--network-id'],
-                    'help': 'the network id of the chain to use (default ae_mainnet)',
-                    'default': 'ae_mainnet'
-                },
-                {
                     'names': ['-t', '--tag'],
                     'help': 'filter accounts by tag',
                     'default': None
                 },
+                {
+                    'names': ['--node-url'],
+                    'help':'the url of the node to use (default https://sdk-mainnet.aepps.com)',
+                    'default': 'https://sdk-mainnet.aepps.com'
+                }
 
             ]
         },
