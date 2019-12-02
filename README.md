@@ -100,7 +100,7 @@ Every paper wallet is an account itself. We need to create these paper wallet ac
 ```
 docker run -it \
 --volume=$PWD/data:/data/paperw \
-aeternity/aeternity/paperwallets \
+aeternity/paperwallets \
 gen \
 -n 5 \
 -f /data/paperw/data.db.sqlite
