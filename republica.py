@@ -581,14 +581,25 @@ def cmd_txs_prepare(args):
             status=STATUS_CREATED,
             operator='=',
             tag=args.tag)
+        # min fee
+        min_fee = node_cli.tx_builder.tx_spend(
+            sign_account.get_address(),
+            sign_account.get_address(),
+            amount,
+            payload,
+            fee,
+            ttl,
+            nonce
+        ).metadata.min_fee
+
         for w in wallets:
             recipient_id = w['public_key']
-            # calculate teh tx fee
+            # calculate the tx fee
             # create the transaction
             tx = node_cli.tx_builder.tx_spend(
                 sign_account.get_address(),
                 recipient_id,
-                amount, # plus fee
+                amount + min_fee,
                 payload,
                 fee,
                 ttl,
@@ -607,10 +618,10 @@ def cmd_txs_prepare(args):
                              tx_hash=tx_s.hash,
                              tx_signed=tx_s.tx)
             nonce += 1
-            total_amount += amount
-            print(f'top up {format_amount(amount)} to account {recipient_id}')
+            total_amount += tx.data.amount + tx.data.fee
+            print(f'top up {format_amount(tx.data.amount)} to account {recipient_id}')
 
-        print(f"A total of {format_amount(total_amount)} (plus fees) will be transfered from {sign_account.get_address()}")
+        print(f"A total of {format_amount(total_amount)} (including fees) will be transfered from {sign_account.get_address()}")
     except Exception as e:
         print(e)
 

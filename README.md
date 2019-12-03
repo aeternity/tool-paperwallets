@@ -4,7 +4,7 @@
 This tutorial will walk you through the steps of creating your own æternity paper wallet(s), including generation of accounts, broadcasting multiple transactions at once and generating QR codes.
 
 ## Wait... what is a paper wallet?
-Paper wallets are useful tools for securing and sending AE tokens. A paper wallet is simply a pair of QR codes (a public and a private key) printed on a piece of paper that users can use to store and send AE tokens. It is possible to use a paper wallet to quickly claim a reward in AE tokens by simply scanning a QR code. As such, AE paper wallets can be used for various promotional campaigns, bounties, event-related usecases, or for simply storing your AE in secure, off-line environemnt.
+Paper wallets are useful tools for securing and sending AE tokens. A paper wallet is simply a pair of QR codes (a public and a private key) printed on a piece of paper that users can use to store and send AE tokens. It is possible to use a paper wallet to quickly claim a reward in AE tokens by simply scanning a QR code. As such, AE paper wallets can be used for various promotional campaigns, bounties, event-related use cases, or for simply storing your AE in secure, off-line environment.
 
 ## Prerequisites
 - Docker
@@ -100,7 +100,7 @@ Every paper wallet is an account itself. We need to create these paper wallet ac
 ```
 docker run -it \
 --volume=$PWD/data:/data/paperw \
-aeternity/paperwallets \
+paperwallets \
 gen \
 -n 5 \
 -f /data/paperw/data.db.sqlite
@@ -199,6 +199,7 @@ In order to generate the PDF paper wallets out of these accounts you can execute
 docker run -it \
 --volume=$PWD/data:/data/paperw \
 aeternity/paperwallets \
+paperwallets
 -f /data/paperw/data.db.sqlite \
 -o /data/paperw/pdfs
 ```
