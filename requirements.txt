@@ -1,5 +1,5 @@
 aepp-sdk==6.2.0
-svglib==0.9.3
+svglib==0.9.4
 PyQRCode==1.2.1
 cu2qu==1.6.6
 fontTools==4.2.0
